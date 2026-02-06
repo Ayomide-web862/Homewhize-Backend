@@ -11,6 +11,9 @@ const pool = mysql.createPool({
   connectionLimit: parseInt(process.env.DB_CONN_LIMIT || "10", 10),
   queueLimit: 0,
   connectTimeout: 20000,
+  ssl: {
+    rejectUnauthorized: true // required for Aiven
+  }
 });
 
 pool.getConnection((err, connection) => {
