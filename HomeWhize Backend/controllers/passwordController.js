@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import nodemailer from "nodemailer";
-import { findUserByEmail, saveOTP, verifyOTP, updatePasswordById, clearOTP } from "../models/userModel.js";
+import { findUserByEmail, saveOTP, verifyOTP, updatePasswordById, clearOTP, saveResetToken } from "../models/userModel.js";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -101,8 +101,8 @@ export const verifyOTPCode = (req, res) => {
         .digest("hex");
       const resetTokenExpiry = new Date(Date.now() + 900000); // 15 minutes
 
-      // Save temporary reset token
-      saveOTP(userId, resetTokenHash, resetTokenExpiry, (saveErr) => {
+      // Save temporary reset token to correct columns
+      saveResetToken(userId, resetTokenHash, resetTokenExpiry, (saveErr) => {
         if (saveErr)
           return res.status(500).json({ message: "Failed to save reset token" });
         res.status(200).json({
@@ -114,7 +114,7 @@ export const verifyOTPCode = (req, res) => {
   });
 };
 
-// Reset password with verified OTP
+// Reset password with verified token
 export const resetPasswordWithToken = (req, res) => {
   const { email, resetToken, newPassword } = req.body;
 
@@ -131,6 +131,21 @@ export const resetPasswordWithToken = (req, res) => {
 
     const user = result[0];
 
+    // Verify reset token is still valid
+    const resetTokenHash = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
+
+    // Check token validity
+    if (user.reset_token !== resetTokenHash) {
+      return res.status(400).json({ message: "Invalid reset token" });
+    }
+
+    if (new Date() > new Date(user.reset_token_expire)) {
+      return res.status(400).json({ message: "Reset token has expired. Please request a new password reset." });
+    }
+
     bcrypt.hash(newPassword, 10, (hashErr, hashedPassword) => {
       if (hashErr) return res.status(500).json({ message: "Error processing password" });
 
@@ -140,11 +155,6 @@ export const resetPasswordWithToken = (req, res) => {
 
         // Clear OTP after successful reset
         clearOTP(user.id, (clearErr) => {
-          if (!clearErr) {
-            return res.status(200).json({
-              message: "Password reset successfully",
-            });
-          }
           return res.status(200).json({
             message: "Password reset successfully",
           });

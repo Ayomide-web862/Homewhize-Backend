@@ -11,7 +11,12 @@ const protect = (req, res, next) => {
     }
 
     const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Verify token with issuer and audience checks
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+      issuer: "homewhize-backend",
+      audience: "homewhize-frontend",
+    });
 
     db.query(
       "SELECT id, name, email, role FROM users WHERE id = ?",
@@ -26,6 +31,9 @@ const protect = (req, res, next) => {
       }
     );
   } catch (error) {
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({ message: "Token expired, please login again" });
+    }
     return res.status(401).json({ message: "Not authorized, token failed" });
   }
 };

@@ -2,7 +2,8 @@ import mysql from "mysql2";
 import dotenv from "dotenv";
 dotenv.config();
 
-const pool = mysql.createPool({
+// Build pool configuration with optional SSL
+const poolConfig = {
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
@@ -11,10 +12,15 @@ const pool = mysql.createPool({
   connectionLimit: parseInt(process.env.DB_CONN_LIMIT || "10", 10),
   queueLimit: 0,
   connectTimeout: 20000,
-  ssl: {
-    rejectUnauthorized: true // required for Aiven
-  }
-});
+};
+
+// Add SSL only if explicitly required (for remote MySQL on some hosting)
+// For cPanel MySQL on same/internal server, SSL is typically NOT needed
+if (process.env.DB_SSL === "true") {
+  poolConfig.ssl = "Amazon RDS"; // or true for standard SSL
+}
+
+const pool = mysql.createPool(poolConfig);
 
 pool.getConnection((err, connection) => {
   if (err) {

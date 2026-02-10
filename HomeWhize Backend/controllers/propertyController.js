@@ -133,37 +133,46 @@ export const getProperties = (req, res) => {
 
 /* PUBLIC PROPERTIES */
 export const getPublicProperties = (req, res) => {
-  const sql = `
-    SELECT 
-      p.id,
-      p.name,
-      p.address,
-      p.location,
-      p.price,
-      p.max_guests,
-      p.bedrooms,
-      MIN(pi.image_url) AS image_url
-    FROM properties p
-    LEFT JOIN property_images pi ON p.id = pi.property_id
-    WHERE p.status = 'Available'
-    GROUP BY p.id
-    ORDER BY p.created_at DESC
-  `;
+  try {
+    const sql = `
+      SELECT 
+        p.id,
+        p.name,
+        p.address,
+        p.location,
+        p.price,
+        p.max_guests,
+        p.bedrooms,
+        (
+          SELECT pi.image_url
+          FROM property_images pi
+          WHERE pi.property_id = p.id
+          ORDER BY pi.id ASC
+          LIMIT 1
+        ) AS image_url
+      FROM properties p
+      WHERE p.status = 'Available'
+      ORDER BY p.created_at DESC
+    `;
 
-  db.query(sql, (err, results) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json([]);
-    }
-    res.json(results);
-  });
+    db.query(sql, (err, results) => {
+      if (err) {
+        console.error("Public properties error:", err);
+        return res.status(500).json({ message: "Failed to load shortlets" });
+      }
+      res.json(results || []);
+    });
+  } catch (error) {
+    console.error("Get public properties error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
 };
+
 
 
 /* GET SINGLE PUBLIC PROPERTY */
 export const getPublicPropertyBySlug = (req, res) => {
   const { slug } = req.params;
-
   const name = slug.replace(/-/g, " ");
 
   const sql = `
@@ -178,16 +187,22 @@ export const getPublicPropertyBySlug = (req, res) => {
       p.description,
       p.latitude,
       p.longitude,
-      GROUP_CONCAT(pi.image_url) AS images
+      (
+        SELECT GROUP_CONCAT(pi.image_url)
+        FROM property_images pi
+        WHERE pi.property_id = p.id
+      ) AS images
     FROM properties p
-    LEFT JOIN property_images pi ON p.id = pi.property_id
     WHERE p.status = 'Available'
       AND LOWER(p.name) = LOWER(?)
-    GROUP BY p.id
+    LIMIT 1
   `;
 
   db.query(sql, [name], (err, results) => {
-    if (err) return res.status(500).json({ message: "Server error" });
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ message: "Server error" });
+    }
 
     if (!results.length) {
       return res.status(404).json({ message: "Shortlet not found" });
@@ -199,6 +214,7 @@ export const getPublicPropertyBySlug = (req, res) => {
     res.json(property);
   });
 };
+
 
 
 

@@ -63,9 +63,14 @@ export const getPosts = (req, res) => {
 
     const postIds = posts.map(p => p.id);
 
+    if (postIds.length === 0) {
+      return res.json(posts);
+    }
+
+    const placeholders = postIds.map(() => '?').join(',');
     db.query(
-      "SELECT * FROM community_post_images WHERE post_id IN (?)",
-      [postIds],
+      `SELECT * FROM community_post_images WHERE post_id IN (${placeholders})`,
+      postIds,
       (err2, imgs) => {
         if (err2) {
           console.error(err2);

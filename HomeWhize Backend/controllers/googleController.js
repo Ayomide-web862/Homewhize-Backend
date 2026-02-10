@@ -77,9 +77,9 @@ const issueToken = (res, user) => {
     },
     process.env.JWT_SECRET,
     {
-      expiresIn: "12h",
+      expiresIn: "2h",                   // Reduced for better security
       issuer: "homewhize-backend",
-      audience: "homewhize-users",
+      audience: "homewhize-frontend",
     }
   );
 

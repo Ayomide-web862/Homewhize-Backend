@@ -1,4 +1,5 @@
 import multer from "multer";
+import path from "path";
 
 const storage = multer.memoryStorage();
 
@@ -8,7 +9,7 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024, // 10MB per document
   },
   fileFilter: (req, file, cb) => {
-    // Accept images and documents
+    // Allowed MIME types
     const allowedMimes = [
       'image/jpeg',
       'image/png',
@@ -18,11 +19,21 @@ const upload = multer({
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     ];
     
-    if (allowedMimes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`File type ${file.mimetype} not allowed. Accept: JPG, PNG, WebP, PDF, DOC, DOCX`), false);
+    // Allowed file extensions
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.pdf', '.doc', '.docx'];
+    const fileExtension = path.extname(file.originalname).toLowerCase();
+
+    // Verify MIME type
+    if (!allowedMimes.includes(file.mimetype)) {
+      return cb(new Error(`File type ${file.mimetype} not allowed`), false);
     }
+
+    // Verify file extension matches allowed types (prevent MIME type spoofing)
+    if (!allowedExtensions.includes(fileExtension)) {
+      return cb(new Error(`File extension ${fileExtension} not allowed`), false);
+    }
+
+    cb(null, true);
   },
 });
 

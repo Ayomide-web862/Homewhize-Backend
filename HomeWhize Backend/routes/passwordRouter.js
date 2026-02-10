@@ -32,9 +32,13 @@ router.post(
 router.post(
 	"/reset-password",
 	validate([
-		check("email").isEmail().normalizeEmail(),
-		check("resetToken").notEmpty(),
-		check("newPassword").isLength({ min: 8 }),
+		check("email").isEmail().normalizeEmail().withMessage("Valid email required"),
+		check("resetToken").notEmpty().withMessage("Reset token required"),
+		check("newPassword")
+			.isLength({ min: 8 })
+			.withMessage("Password must be at least 8 characters")
+			.matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
+			.withMessage("Password must contain uppercase, lowercase, and numbers"),
 	]),
 	resetPasswordWithToken
 );

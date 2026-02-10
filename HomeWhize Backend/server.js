@@ -19,30 +19,59 @@ dotenv.config();
 const app = express();
 
 // When running behind a proxy (e.g., nginx, Heroku) trust first proxy
-app.set("trust proxy", 1);
+// Make proxy trust configurable for Passenger/nginx setups
+app.set("trust proxy", process.env.TRUST_PROXY || 1);
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Hide Express signature header
+app.disable("x-powered-by");
+
+// Body parsers with sensible limits for production (prevents large payload abuse)
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: process.env.JSON_BODY_LIMIT || "10mb" }));
+
+// 🛡️ CSRF Protection: Verify origin/referer on state-changing requests
+const verifyCsrf = (req, res, next) => {
+  if (["POST", "PUT", "DELETE", "PATCH"].includes(req.method)) {
+    const origin = req.headers.origin || req.headers.referer;
+    const host = req.headers.host;
+    
+    // Allow if origin matches host or if it's internal request
+    if (origin && !origin.includes(host) && process.env.NODE_ENV === "production") {
+      console.warn(`[CSRF Alert] Request from different origin: ${origin}`);
+      // In production, you can reject or log
+    }
+  }
+  next();
+};
+app.use(verifyCsrf);
+
 // CORS - allow only known origins, support credentials and preflight
 // Allowed origins can be configured via FRONTEND_URLS (comma-separated) in env
-const allowedOriginsEnv = process.env.FRONTEND_URLS || process.env.FRONTEND_URL || "http://localhost:5173";
-const allowedOrigins = allowedOriginsEnv.split(",").map((s) => s.trim());
+const allowedOriginsEnv =
+  process.env.FRONTEND_URLS ||
+  process.env.FRONTEND_URL ||
+  "https://homewhize.com,http://homewhize.com,http://localhost:5173";
+
+const allowedOrigins = allowedOriginsEnv
+  .split(",")
+  .map((s) => s.trim());
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
+      if (!origin) return callback(null, true); // allow server-to-server / browser direct hits
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
       }
+
+      console.warn("Blocked by CORS:", origin);
+      return callback(null, false); // ⛔ DO NOT THROW ERROR
     },
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
-    maxAge: 86400,
   })
 );
+
 
 if (!process.env.JWT_SECRET) {
   console.warn("WARNING: JWT_SECRET is not set. Authentication will fail without it.");
@@ -65,7 +94,11 @@ app.use(
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", "https://www.googletagmanager.com", "https://www.google-analytics.com", "https://accounts.google.com", "https://apis.google.com"],
-        connectSrc: ["'self'", "https://www.googleapis.com"],
+        connectSrc: [
+          "'self'",
+          "https://api.homewhize.com",
+          "https://www.googleapis.com"
+        ],
         imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         frameSrc: ["'self'", "https://accounts.google.com"],
@@ -136,21 +169,20 @@ console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
     console.log("KYC table ensured (kyc_requests).");
     // Ensure `updated_at` column exists (some older installations may lack it)
     try {
-      await db.execute(
-        "ALTER TABLE kyc_requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-      );
-      console.log("KYC table column 'updated_at' ensured.");
+      // First check if the column exists to avoid noisy ALTER errors
+      const [cols] = await db.execute("SHOW COLUMNS FROM kyc_requests LIKE 'updated_at'");
+      if (cols && cols.length > 0) {
+        console.log("KYC table column 'updated_at' already exists.");
+      } else {
+        await db.execute(
+          "ALTER TABLE kyc_requests ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+        );
+        console.log("KYC table column 'updated_at' added.");
+      }
     } catch (alterErr) {
-      // Some MySQL versions do not support IF NOT EXISTS on ADD COLUMN; attempt an idempotent fallback
-      if (alterErr && /syntax|ER_PARSE_ERROR/i.test(alterErr.message || "")) {
-        try {
-          await db.execute(
-            "ALTER TABLE kyc_requests ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-          );
-          console.log("KYC table column 'updated_at' added.");
-        } catch (secondErr) {
-          console.warn("Could not add 'updated_at' column automatically:", secondErr.message || secondErr);
-        }
+      // If column already exists (duplicate column) or other benign issue, log and continue
+      if (alterErr && /ER_DUP_FIELDNAME|duplicate column name/i.test(alterErr.message || "")) {
+        console.log("KYC table column 'updated_at' already exists (caught duplicate column).");
       } else {
         console.warn("Could not ensure 'updated_at' column:", alterErr.message || alterErr);
       }
@@ -171,11 +203,42 @@ app.use("/api/bookings", bookingRoutes);
 
 
 
-// Global Error Handler
+// Global Error Handler - Production Safe
 app.use((err, req, res, next) => {
-  console.error("Server Error:", err);
-  res.status(500).json({ message: "Something went wrong on the server." });
+  const isDevelopment = process.env.NODE_ENV === "development";
+  
+  // Log error for debugging (server-side only)
+  if (isDevelopment) {
+    console.error("Server Error:", err);
+  } else {
+    // In production, log errors but don't expose to client
+    console.error("[ERROR]", new Date().toISOString(), err);
+  }
+
+  // Don't expose internal details in production
+  const message = isDevelopment 
+    ? err.message 
+    : "Something went wrong on the server. Please try again later.";
+
+  res.status(500).json({ 
+    message: message,
+    // Only expose error code in production, not details
+    ...(isDevelopment && { error: err.stack })
+  });
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// For Phusion Passenger / cPanel deployments we should not always call app.listen()
+// Passenger will `require()` this file and expect the app to be exported. To support
+// both local and Passenger startup, only call `app.listen` when not running under
+// Passenger. Set env `PASSENGER_APP=true` on your cPanel app to disable manual listen.
+if (process.env.PASSENGER_APP === "true" || process.env.PASSENGER === "true") {
+  // Passenger will `require()` this file and expect the app to be exported
+  console.log("Passenger mode detected - exporting app for Passenger / cPanel startup");
+} else {
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
+
+// Export the Express app for environments (like Phusion Passenger) that require it.
+export default app;

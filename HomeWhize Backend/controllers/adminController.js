@@ -25,11 +25,12 @@ export const createAdmin = async (req, res) => {
 
       const hashedPassword = await bcrypt.hash(password, 10);
 
-      createUser(name, email, hashedPassword, "admin", (err) => {
-        if (err)
-          return res
-            .status(500)
-            .json({ message: "Failed to create admin" });
+      // Provide explicit provider and handle DB callback errors
+      createUser(name, email, hashedPassword, "admin", "local", (err, result) => {
+        if (err) {
+          console.error("Create admin error:", err);
+          return res.status(500).json({ message: "Failed to create admin" });
+        }
 
         return res.status(201).json({
           message: "Admin account created successfully",

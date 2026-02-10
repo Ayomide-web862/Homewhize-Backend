@@ -36,8 +36,13 @@ export const registerUser = (req, res) => {
       bcrypt.hash(password, 10, (err, hashedPassword) => {
         if (err)
           return res.status(500).json({ message: "Error hashing password" });
+        // Ensure we pass the `provider` argument and handle DB errors in callback
+        createUser(name, email, hashedPassword, assignedRole, "local", (createErr, result) => {
+          if (createErr) {
+            console.error("Create user error:", createErr);
+            return res.status(500).json({ message: "Failed to create user" });
+          }
 
-        createUser(name, email, hashedPassword, assignedRole, () => {
           return res.status(201).json({
             message: "User registered successfully",
             role: assignedRole,
@@ -81,9 +86,9 @@ export const loginUser = (req, res) => {
           },
           process.env.JWT_SECRET,
           {
-            expiresIn: "12h",             // Shorter expiration for safety
-            issuer: "homewhize-backend",  // Optional, identify your server
-            audience: "homewhize-users"
+            expiresIn: "2h",              // Reduced from 12h for better security
+            issuer: "homewhize-backend",  // Identify your server
+            audience: "homewhize-frontend"
           }
         );
 
