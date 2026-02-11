@@ -29,7 +29,7 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: process.env.JSON_BODY_LIMIT || "10mb" }));
 
-// 🛡️ CSRF Protection: Verify origin/referer on state-changing requests
+//  CSRF Protection: Verify origin/referer on state-changing requests
 const verifyCsrf = (req, res, next) => {
   if (["POST", "PUT", "DELETE", "PATCH"].includes(req.method)) {
     const origin = req.headers.origin || req.headers.referer;
@@ -66,7 +66,7 @@ app.use(
       }
 
       console.warn("Blocked by CORS:", origin);
-      return callback(null, false); // ⛔ DO NOT THROW ERROR
+      return callback(null, false); // DO NOT THROW ERROR
     },
     credentials: true,
   })
@@ -200,6 +200,8 @@ app.use("/api/community", communityRoutes);
 app.use("/api/auth/password", authLimiter, passwordRouter);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/bookings", bookingRoutes);
+import paymentRoutes from "./routes/paymentRoutes.js";
+app.use("/api/payments", paymentRoutes);
 
 
 

@@ -143,6 +143,8 @@ export const getPublicProperties = (req, res) => {
         p.price,
         p.max_guests,
         p.bedrooms,
+        p.bathrooms,
+        p.description,
         (
           SELECT pi.image_url
           FROM property_images pi
@@ -151,7 +153,7 @@ export const getPublicProperties = (req, res) => {
           LIMIT 1
         ) AS image_url
       FROM properties p
-      WHERE p.status = 'Available'
+      WHERE LOWER(p.status) = 'available'
       ORDER BY p.created_at DESC
     `;
 
@@ -160,6 +162,7 @@ export const getPublicProperties = (req, res) => {
         console.error("Public properties error:", err);
         return res.status(500).json({ message: "Failed to load shortlets" });
       }
+      console.log("Returning", results?.length || 0, "properties");
       res.json(results || []);
     });
   } catch (error) {
@@ -184,6 +187,7 @@ export const getPublicPropertyBySlug = (req, res) => {
       p.price,
       p.max_guests,
       p.bedrooms,
+      p.bathrooms,
       p.description,
       p.latitude,
       p.longitude,
@@ -193,24 +197,26 @@ export const getPublicPropertyBySlug = (req, res) => {
         WHERE pi.property_id = p.id
       ) AS images
     FROM properties p
-    WHERE p.status = 'Available'
+    WHERE LOWER(p.status) = 'available'
       AND LOWER(p.name) = LOWER(?)
     LIMIT 1
   `;
 
   db.query(sql, [name], (err, results) => {
     if (err) {
-      console.error(err);
+      console.error("Error fetching property by slug:", err);
       return res.status(500).json({ message: "Server error" });
     }
 
-    if (!results.length) {
+    if (!results?.length) {
+      console.warn(`Property not found with slug: ${slug}`);
       return res.status(404).json({ message: "Shortlet not found" });
     }
 
     const property = results[0];
     property.images = property.images ? property.images.split(",") : [];
 
+    console.log("✅ Property retrieved:", property.name);
     res.json(property);
   });
 };

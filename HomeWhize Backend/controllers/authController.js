@@ -2,7 +2,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
-import { createUser, findUserByEmail } from "../models/userModel.js";
+import { createUser, findUserByEmail, updatePasswordById } from "../models/userModel.js";
 
 dotenv.config();
 
@@ -108,5 +108,73 @@ export const loginUser = (req, res) => {
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// Return current authenticated user
+export const getCurrentUser = (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ message: "Not authenticated" });
+    return res.status(200).json({ user: req.user });
+  } catch (error) {
+    console.error("Get current user error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Change password - requires currentPassword and newPassword in body
+export const changePassword = (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!userId) return res.status(401).json({ message: "Not authenticated" });
+    if (!currentPassword || !newPassword)
+      return res.status(400).json({ message: "Both current and new passwords are required" });
+    if (newPassword.length < 8)
+      return res.status(400).json({ message: "New password must be at least 8 characters" });
+
+    // fetch user
+    findUserByEmail(req.user.email, (err, rows) => {
+      if (err) {
+        console.error("Change password - DB error:", err);
+        return res.status(500).json({ message: "Database error" });
+      }
+
+      if (!rows || rows.length === 0) return res.status(404).json({ message: "User not found" });
+
+      const user = rows[0];
+
+      // verify current password
+      bcrypt.compare(currentPassword, user.password, (cmpErr, isMatch) => {
+        if (cmpErr) {
+          console.error("Change password - compare error:", cmpErr);
+          return res.status(500).json({ message: "Server error" });
+        }
+
+        if (!isMatch) return res.status(400).json({ message: "Current password is incorrect" });
+
+        // hash new password
+        bcrypt.hash(newPassword, 10, (hashErr, hashed) => {
+          if (hashErr) {
+            console.error("Change password - hash error:", hashErr);
+            return res.status(500).json({ message: "Server error" });
+          }
+
+          // update
+          updatePasswordById(userId, hashed, (upErr, result) => {
+            if (upErr) {
+              console.error("Change password - update error:", upErr);
+              return res.status(500).json({ message: "Failed to update password" });
+            }
+
+            return res.status(200).json({ message: "Password updated successfully" });
+          });
+        });
+      });
+    });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };

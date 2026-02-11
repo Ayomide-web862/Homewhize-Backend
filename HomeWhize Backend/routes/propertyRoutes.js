@@ -19,8 +19,6 @@ router.post(
   addProperty
 );
 
-router.get("/public", getPublicProperties);
-
 router.get(
   "/admin",
   protect,
@@ -35,7 +33,10 @@ router.delete(
   deleteProperty
 );
 
+// ✅ Specific route MUST come before generic /public route
 router.get("/public/slug/:slug", getPublicPropertyBySlug);
+
+router.get("/public", getPublicProperties);
 
 
 export default router;
