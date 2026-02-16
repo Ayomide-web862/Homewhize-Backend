@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import helmet from "helmet";
+import compression from "compression";
 import rateLimit from "express-rate-limit";
 
 import authRoutes from "./routes/authRoutes.js";
@@ -127,6 +128,9 @@ app.use(
     legacyHeaders: false,
   })
 );
+
+// Enable gzip/deflate compression for responses to reduce payload size
+app.use(compression());
 
 
 app.get("/", (req, res) => {

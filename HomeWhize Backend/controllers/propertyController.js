@@ -134,6 +134,23 @@ export const getProperties = (req, res) => {
 /* PUBLIC PROPERTIES */
 export const getPublicProperties = (req, res) => {
   try {
+    // Simple in-memory cache to reduce DB load for public properties.
+    // TTL is short so admins/admin changes reflect quickly while still
+    // improving latency for anonymous users.
+  } catch (e) {
+    // fallthrough
+  }
+  try {
+    const TTL_MS = 30 * 1000; // 30 seconds
+    if (!global.__publicPropertiesCache) global.__publicPropertiesCache = {};
+    const cache = global.__publicPropertiesCache;
+
+    // Return cached response when fresh
+    if (cache.data && Date.now() - cache.ts < TTL_MS) {
+      res.setHeader("Cache-Control", "public, max-age=30");
+      return res.json(cache.data);
+    }
+
     const sql = `
       SELECT 
         p.id,
@@ -163,6 +180,15 @@ export const getPublicProperties = (req, res) => {
         return res.status(500).json({ message: "Failed to load shortlets" });
       }
       console.log("Returning", results?.length || 0, "properties");
+      // cache results for TTL_MS and set cache-control header
+      try {
+        cache.data = results || [];
+        cache.ts = Date.now();
+      } catch (e) {
+        console.warn("Failed to set public properties cache", e);
+      }
+
+      res.setHeader("Cache-Control", "public, max-age=30");
       res.json(results || []);
     });
   } catch (error) {
