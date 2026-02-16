@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
 import { createUser, findUserByEmail } from "../models/userModel.js";
+import { sendSignupEmail } from "../utils/emailService.js";
 
 dotenv.config();
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -26,9 +27,11 @@ export const googleAuth = async (req, res) => {
         return res.status(500).json({ message: "Database error" });
 
       let user;
+      let isNewUser = false;
 
       // 🟢 IF USER DOES NOT EXIST → CREATE
       if (users.length === 0) {
+        isNewUser = true;
         const randomPassword = await bcrypt.hash(
           Math.random().toString(36),
           10
@@ -52,6 +55,16 @@ export const googleAuth = async (req, res) => {
               email,
               role: "user",
             };
+
+            // Send signup acknowledgment email for new Google users
+            sendSignupEmail(user, "google")
+              .then(() => {
+                console.log("Google signup email sent to", email);
+              })
+              .catch((emailErr) => {
+                console.warn("Failed to send Google signup email:", emailErr);
+                // Don't fail the login if email fails
+              });
 
             issueToken(res, user);
           }

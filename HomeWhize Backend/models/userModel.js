@@ -68,6 +68,24 @@ const clearOTP = (userId, callback) => {
   db.query(query, [userId], callback);
 };
 
-export { saveResetToken, findUserByResetToken, updatePasswordById, saveOTP, verifyOTP, clearOTP };
+// Update user details (name, email)
+const updateUserById = (userId, name, email, callback) => {
+  const query = `UPDATE users SET name = ?, email = ? WHERE id = ?`;
+  db.query(query, [name, email, userId], callback);
+};
+
+// Delete user by ID
+const deleteUserById = (userId, callback) => {
+  const query = `DELETE FROM users WHERE id = ?`;
+  db.query(query, [userId], callback);
+};
+
+// Find user by ID
+const findUserById = (userId, callback) => {
+  const query = `SELECT id, name, email, role, provider FROM users WHERE id = ?`;
+  db.query(query, [userId], callback);
+};
+
+export { saveResetToken, findUserByResetToken, updatePasswordById, saveOTP, verifyOTP, clearOTP, updateUserById, deleteUserById, findUserById };
 
 export { createUser, findUserByEmail, getUsersByRole };

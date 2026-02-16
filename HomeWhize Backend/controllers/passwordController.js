@@ -2,6 +2,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import nodemailer from "nodemailer";
 import { findUserByEmail, saveOTP, verifyOTP, updatePasswordById, clearOTP, saveResetToken } from "../models/userModel.js";
+import { sendPasswordChangeEmail } from "../utils/emailService.js";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -155,6 +156,16 @@ export const resetPasswordWithToken = (req, res) => {
 
         // Clear OTP after successful reset
         clearOTP(user.id, (clearErr) => {
+          // Send password change confirmation email
+          sendPasswordChangeEmail(user.name, user.email)
+            .then(() => {
+              console.log("Password reset confirmation email sent to", user.email);
+            })
+            .catch((emailErr) => {
+              console.warn("Failed to send password reset confirmation email:", emailErr);
+              // Don't fail the reset if email fails
+            });
+
           return res.status(200).json({
             message: "Password reset successfully",
           });

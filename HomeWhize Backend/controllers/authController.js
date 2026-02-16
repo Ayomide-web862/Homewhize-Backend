@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import { createUser, findUserByEmail, updatePasswordById } from "../models/userModel.js";
+import { sendSignupEmail, sendPasswordChangeEmail, sendKYCReminderEmail } from "../utils/emailService.js";
 
 dotenv.config();
 
@@ -42,6 +43,16 @@ export const registerUser = (req, res) => {
             console.error("Create user error:", createErr);
             return res.status(500).json({ message: "Failed to create user" });
           }
+
+          // Send signup acknowledgment email
+          sendSignupEmail({ name, email }, "manual")
+            .then(() => {
+              console.log("Signup email sent to", email);
+            })
+            .catch((emailErr) => {
+              console.warn("Failed to send signup email:", emailErr);
+              // Don't fail the registration if email fails
+            });
 
           return res.status(201).json({
             message: "User registered successfully",
@@ -167,6 +178,16 @@ export const changePassword = (req, res) => {
               console.error("Change password - update error:", upErr);
               return res.status(500).json({ message: "Failed to update password" });
             }
+
+            // Send password change confirmation email
+            sendPasswordChangeEmail(user.name, user.email)
+              .then(() => {
+                console.log("Password change confirmation email sent to", user.email);
+              })
+              .catch((emailErr) => {
+                console.warn("Failed to send password change email:", emailErr);
+                // Don't fail the password change if email fails
+              });
 
             return res.status(200).json({ message: "Password updated successfully" });
           });
