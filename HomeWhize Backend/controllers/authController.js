@@ -1,7 +1,6 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
-import nodemailer from "nodemailer";
 import { createUser, findUserByEmail, updatePasswordById } from "../models/userModel.js";
 import { sendSignupEmail, sendPasswordChangeEmail, sendKYCReminderEmail } from "../utils/emailService.js";
 
@@ -9,15 +8,6 @@ dotenv.config();
 
 // Allowed roles
 const allowedRoles = ["user", "admin", "superadmin", "master"];
-
-// Email Transporter
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
 
 export const registerUser = (req, res) => {
   try {

@@ -15,7 +15,10 @@ const router = express.Router();
 router.post(
   "/",
   protect,
-  upload.array("images", 5),
+  // Accept either `images` or `images[]` fields from the frontend.
+  // `fields` lets us accept both naming conventions which some clients use
+  // when submitting multiple files.
+  upload.fields([{ name: "images", maxCount: 10 }, { name: "images[]", maxCount: 10 }]),
   addProperty
 );
 

@@ -1,4 +1,6 @@
 import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
 import cors from "cors";
 import dotenv from "dotenv";
 import helmet from "helmet";
@@ -14,10 +16,15 @@ import passwordRouter from "./routes/passwordRouter.js";
 import kycRoutes from "./routes/kycRoutes.js";
 import bookingRoutes from "./routes/bookingRoutes.js";
 import db from "./config/db.js";
+import { verifyEmailConnection } from "./config/emailConfig.js";
 
 dotenv.config();
 
 const app = express();
+
+// ESM __dirname helper
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // When running behind a proxy (e.g., nginx, Heroku) trust first proxy
 // Make proxy trust configurable for Passenger/nginx setups
@@ -132,6 +139,22 @@ app.use(
 // Enable gzip/deflate compression for responses to reduce payload size
 app.use(compression());
 
+// Optional: serve a built frontend (upload `dist` to `public/` or set `FRONTEND_DIST_PATH`)
+if (process.env.SERVE_FRONTEND === "true") {
+  const frontendDist = process.env.FRONTEND_DIST_PATH || path.join(__dirname, "public");
+  app.use(express.static(frontendDist));
+
+  // Fallback to index.html for client-side routing, but ignore API routes
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) return next();
+    res.sendFile(path.join(frontendDist, "index.html"), (err) => {
+      if (err) next();
+    });
+  });
+
+  console.log("Serving frontend from:", frontendDist);
+}
+
 
 app.get("/", (req, res) => {
   res.json({
@@ -193,6 +216,19 @@ console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
     }
   } catch (err) {
     console.error("Failed to ensure kyc_requests table:", err);
+  }
+})();
+
+// Verify email configuration on startup
+(async () => {
+  try {
+    const emailOk = await verifyEmailConnection();
+    if (!emailOk) {
+      console.warn("⚠️ Email service not fully configured. Emails may fail to send.");
+      console.warn("   See EMAIL_SETUP_GUIDE.md for configuration help.");
+    }
+  } catch (err) {
+    console.warn("⚠️ Could not verify email connection:", err.message);
   }
 })();
 

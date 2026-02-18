@@ -1,16 +1,36 @@
-import nodemailer from "nodemailer";
+import { sendEmailSafely } from "../config/emailConfig.js";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-// Create email transporter
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+/**
+ * Logo URL Configuration
+ * Uses environment variable for flexibility (CDN, domain, Cloudinary, etc.)
+ * Defaults to serving from your domain at /Homewhize.png
+ * 
+ * Set in .env:
+ * LOGO_URL=https://homewhize.com/Homewhize.png
+ * Or use Cloudinary:
+ * LOGO_URL=https://res.cloudinary.com/your-account/image/upload/Homewhize.png
+ */
+const LOGO_URL = process.env.LOGO_URL || `${process.env.FRONTEND_URL || 'https://homewhize.com'}/Homewhize.png`;
+
+console.log("[Email Service] Using logo URL:", LOGO_URL);
+
+// Helper to render a small inline logo sized relative to surrounding text.
+// Use `logoImgInline()` inside template strings where the logo should sit inline with text.
+function logoImgInline(src = LOGO_URL, alt = "HomeWhize", sizeEm = 1) {
+  return `<img src="${src}" alt="${alt}" style="height:${sizeEm}em; width:auto; display:inline-block; vertical-align:middle; margin:0 6px;" />`;
+}
+
+// Shared email header HTML with logo
+function getEmailHeader() {
+  return `
+    <div class="header">
+      <img src="${LOGO_URL}" alt="HomeWhize Logo" class="logo" />
+    </div>
+  `;
+}
 
 /**
  * Send signup acknowledgment email
@@ -38,20 +58,16 @@ export const sendSignupEmail = async (user, signupMethod = "manual") => {
       html: html,
     };
 
-    return await new Promise((resolve, reject) => {
-      transporter.sendMail(mailOptions, (err, info) => {
-        if (err) {
-          console.error("Signup email sending failed:", err);
-          reject(err);
-        } else {
-          console.log("Signup email sent successfully:", info.response);
-          resolve(info);
-        }
-      });
-    });
+    const info = await sendEmailSafely(mailOptions);
+    if (info) {
+      console.log("✅ Signup email sent successfully to", email);
+    } else {
+      console.warn("⚠️ Signup email failed to send to", email, "but process continues");
+    }
+    return info;
   } catch (error) {
-    console.error("Error in sendSignupEmail:", error);
-    throw error;
+    console.error("❌ Error in sendSignupEmail:", error.message);
+    return null;
   }
 };
 
@@ -74,20 +90,16 @@ export const sendWelcomeEmail = async (name, email, tempPassword, role = "owner"
       html: html,
     };
 
-    return await new Promise((resolve, reject) => {
-      transporter.sendMail(mailOptions, (err, info) => {
-        if (err) {
-          console.error("Welcome email sending failed:", err);
-          reject(err);
-        } else {
-          console.log("Welcome email sent successfully:", info.response);
-          resolve(info);
-        }
-      });
-    });
+    const info = await sendEmailSafely(mailOptions);
+    if (info) {
+      console.log("✅ Welcome email sent successfully to", email);
+    } else {
+      console.warn("⚠️ Welcome email failed to send to", email, "but account creation continues");
+    }
+    return info;
   } catch (error) {
-    console.error("Error in sendWelcomeEmail:", error);
-    throw error;
+    console.error("❌ Error in sendWelcomeEmail:", error.message);
+    return null;
   }
 };
 
@@ -108,20 +120,16 @@ export const sendPasswordChangeEmail = async (name, email) => {
       html: html,
     };
 
-    return await new Promise((resolve, reject) => {
-      transporter.sendMail(mailOptions, (err, info) => {
-        if (err) {
-          console.error("Password change email sending failed:", err);
-          reject(err);
-        } else {
-          console.log("Password change email sent successfully:", info.response);
-          resolve(info);
-        }
-      });
-    });
+    const info = await sendEmailSafely(mailOptions);
+    if (info) {
+      console.log("✅ Password change email sent successfully to", email);
+    } else {
+      console.warn("⚠️ Password change email failed to send to", email, "but change is confirmed");
+    }
+    return info;
   } catch (error) {
-    console.error("Error in sendPasswordChangeEmail:", error);
-    throw error;
+    console.error("❌ Error in sendPasswordChangeEmail:", error.message);
+    return null;
   }
 };
 
@@ -142,20 +150,16 @@ export const sendKYCReminderEmail = async (name, email) => {
       html: html,
     };
 
-    return await new Promise((resolve, reject) => {
-      transporter.sendMail(mailOptions, (err, info) => {
-        if (err) {
-          console.error("KYC reminder email sending failed:", err);
-          reject(err);
-        } else {
-          console.log("KYC reminder email sent successfully:", info.response);
-          resolve(info);
-        }
-      });
-    });
+    const info = await sendEmailSafely(mailOptions);
+    if (info) {
+      console.log("✅ KYC reminder email sent successfully to", email);
+    } else {
+      console.warn("⚠️ KYC reminder email failed to send to", email);
+    }
+    return info;
   } catch (error) {
-    console.error("Error in sendKYCReminderEmail:", error);
-    throw error;
+    console.error("❌ Error in sendKYCReminderEmail:", error.message);
+    return null;
   }
 };
 
@@ -188,11 +192,19 @@ function getManualSignupTemplate(name, email) {
           padding: 40px 20px;
           text-align: center;
         }
+        .logo {
+          max-width: 220px;
+          height: auto;
+          display: block;
+          margin: 0 auto 15px;
+          max-height: 3em;
+        }
         .header h1 {
           color: white;
           margin: 0;
           font-size: 32px;
           font-weight: 700;
+          display: none;
         }
         .content {
           padding: 40px 30px;
@@ -261,11 +273,12 @@ function getManualSignupTemplate(name, email) {
     <body>
       <div class="container">
         <div class="header">
-          <h1>🏠 HomeWhize</h1>
+          <img src="${LOGO_URL}" alt="HomeWhize Logo" class="logo" />
+          <h1>HomeWhize</h1>
         </div>
         
         <div class="content">
-          <div class="greeting">Welcome to HomeWhize, ${name}! 👋</div>
+          <div class="greeting">Welcome to HomeWhize, ${name}!</div>
           
           <div class="message">
             <p>We're thrilled to have you join our community! Your account has been successfully created, and you're now part of a network dedicated to providing exceptional property rental experiences.</p>
@@ -338,11 +351,19 @@ function getGoogleSignupTemplate(name, email) {
           padding: 40px 20px;
           text-align: center;
         }
+        .logo {
+          max-width: 220px;
+          height: auto;
+          display: block;
+          margin: 0 auto 15px;
+          max-height: 3em;
+        }
         .header h1 {
           color: white;
           margin: 0;
           font-size: 32px;
           font-weight: 700;
+          display: none;
         }
         .google-badge {
           color: white;
@@ -429,19 +450,19 @@ function getGoogleSignupTemplate(name, email) {
     <body>
       <div class="container">
         <div class="header">
-          <h1>🏠 HomeWhize</h1>
+          <img src="${LOGO_URL}" alt="HomeWhize Logo" class="logo" />
           <div class="google-badge">✓ Google Account Connected</div>
         </div>
         
         <div class="content">
-          <div class="greeting">Welcome ${name}! 👋</div>
+          <div class="greeting">Welcome ${name}! </div>
           
           <div class="message">
             <p>Congratulations! Your HomeWhize account has been successfully created using your Google account. You're all set to start exploring amazing properties!</p>
           </div>
 
           <div class="google-connect">
-            <p><strong style="color: #0F4D3C;">🔒 Secure Connection</strong><br>
+            <p><strong style="color: #0F4D3C;"> Secure Connection</strong><br>
             Your account is securely connected to your Google account for easy, fast login.</p>
           </div>
 
@@ -506,6 +527,13 @@ function getWelcomeTemplate(name, email, tempPassword, role) {
           background: linear-gradient(135deg, #0F4D3C 0%, #1a6b55 100%);
           padding: 40px 20px;
           text-align: center;
+        }
+        .logo {
+          max-width: 220px;
+          height: auto;
+          display: block;
+          margin: 0 auto 15px;
+          max-height: 3em;
         }
         .header h1 {
           color: white;
@@ -684,19 +712,20 @@ function getWelcomeTemplate(name, email, tempPassword, role) {
     <body>
       <div class="container">
         <div class="header">
-          <h1>🏠 HomeWhize</h1>
+          <img src="${LOGO_URL}" alt="HomeWhize Logo" class="logo" />
+          <h1> HomeWhize</h1>
           <div class="role-badge">${roleTitle} Account Created</div>
         </div>
         
         <div class="content">
-          <div class="greeting">Welcome to HomeWhize, ${name}! 🎉</div>
+          <div class="greeting">Welcome to HomeWhize, ${name}!</div>
           
           <div class="message">
             Your ${role} account has been successfully created! Here's everything you need to get started with your HomeWhize dashboard.
           </div>
 
           <div class="credentials-box">
-            <h3>🔐 Your Account Credentials</h3>
+            <h3>Your Account Credentials</h3>
             <div class="credential-item">
               <div class="credential-label">Email Address</div>
               <div class="credential-value">${email}</div>
@@ -724,36 +753,35 @@ function getWelcomeTemplate(name, email, tempPassword, role) {
                 <div class="step-number">2</div>
                 <div class="step-content">
                   <strong>Access Settings</strong><br>
-                  Click on your profile icon or settings menu in the top-right corner.
+                  Click on Settings from the sidebar menu to view your account settings.
                 </div>
               </li>
               <li>
                 <div class="step-number">3</div>
                 <div class="step-content">
                   <strong>Change Password</strong><br>
-                  Select "Change Password" and enter your temporary password, then create a new strong password.
+                  Enter your temporary password, then create a new strong password.
                 </div>
               </li>
               <li>
                 <div class="step-number">4</div>
                 <div class="step-content">
                   <strong>Complete KYC Verification</strong><br>
-                  Visit your KYC page and complete the verification process to unlock all features.
+                  Visit your KYC page and complete the verification process to start managing your properties.
                 </div>
               </li>
             </ol>
           </div>
 
           <div class="support-box">
-            <p><strong>💡 Next Steps:</strong></p>
+            <p><strong>💡 Key Steps:</strong></p>
             <p>1. Change your password immediately upon first login</p>
             <p>2. Complete your KYC verification on the KYC page</p>
-            <p>3. Set up your profile information</p>
-            <p>4. Start managing your properties and bookings</p>
+            <p>3. Start managing your properties and bookings</p>
           </div>
 
-          <div style="text-align: center;">
-            <a href="https://homewhize.com/admin" class="cta-button">Access Admin Dashboard</a>
+          <div style="text-align: center; back">
+            <a href="https://homewhize.com/login" class="cta-button">Access Admin Dashboard style=" #eee;"</a>
           </div>
 
           <div class="message" style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
@@ -810,6 +838,14 @@ function getPasswordChangeTemplate(name, email) {
           margin: 0;
           font-size: 32px;
           font-weight: 700;
+          display: none;
+        }
+        .logo {
+          max-width: 220px;
+          height: auto;
+          display: block;
+          margin: 0 auto 15px;
+          max-height: 3em;
         }
         .success-icon {
           font-size: 60px;
@@ -887,7 +923,7 @@ function getPasswordChangeTemplate(name, email) {
     <body>
       <div class="container">
         <div class="header">
-          <h1>🏠 HomeWhize</h1>
+          <img src="${LOGO_URL}" alt="HomeWhize Logo" class="logo" />
           <div class="success-icon">✓</div>
         </div>
         
@@ -971,6 +1007,14 @@ function getKYCReminderTemplate(name, email) {
           margin: 0;
           font-size: 32px;
           font-weight: 700;
+          display: none;
+        }
+        .logo {
+          max-width: 220px;
+          height: auto;
+          display: block;
+          margin: 0 auto 15px;
+          max-height: 3em;
         }
         .content {
           padding: 40px 30px;
@@ -1069,7 +1113,7 @@ function getKYCReminderTemplate(name, email) {
     <body>
       <div class="container">
         <div class="header">
-          <h1>🏠 HomeWhize</h1>
+          <img src="${LOGO_URL}" alt="HomeWhize Logo" class="logo" />
         </div>
         
         <div class="content">

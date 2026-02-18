@@ -21,16 +21,26 @@ export const addProperty = async (req, res) => {
 
     const adminId = req.user.id;
 
-    if (!req.files || req.files.length === 0) {
+    // Normalize multer's `req.files` whether it's an array (upload.array)
+    // or an object of arrays (upload.fields). This makes uploads resilient
+    // to frontend naming differences like `images` vs `images[]`.
+    let files = [];
+    if (Array.isArray(req.files)) files = req.files;
+    else if (req.files && typeof req.files === "object") {
+      files = Object.values(req.files).flat();
+    }
+
+    console.log("Received files:", files.length);
+
+    if (!files || files.length === 0) {
       console.log("FILES:", req.files);
       return res.status(400).json({
         message: "At least one image is required",
       });
     }
 
-
     /* UPLOAD IMAGES */
-    const uploadPromises = req.files.map(file =>
+    const uploadPromises = files.map((file) =>
       new Promise((resolve, reject) => {
         cloudinary.uploader.upload_stream(
           { folder: "properties" },
@@ -162,15 +172,11 @@ export const getPublicProperties = (req, res) => {
         p.bedrooms,
         p.bathrooms,
         p.description,
-        (
-          SELECT pi.image_url
-          FROM property_images pi
-          WHERE pi.property_id = p.id
-          ORDER BY pi.id ASC
-          LIMIT 1
-        ) AS image_url
+        GROUP_CONCAT(pi.image_url) AS images
       FROM properties p
+      LEFT JOIN property_images pi ON p.id = pi.property_id
       WHERE LOWER(p.status) = 'available'
+      GROUP BY p.id
       ORDER BY p.created_at DESC
     `;
 
@@ -182,14 +188,21 @@ export const getPublicProperties = (req, res) => {
       console.log("Returning", results?.length || 0, "properties");
       // cache results for TTL_MS and set cache-control header
       try {
-        cache.data = results || [];
+        // Convert GROUP_CONCAT string to array for images
+        const formatted = (results || []).map((r) => ({
+          ...r,
+          images: r.images ? r.images.split(",") : [],
+          image_url: r.images ? r.images.split(",")[0] : null,
+        }));
+
+        cache.data = formatted;
         cache.ts = Date.now();
       } catch (e) {
         console.warn("Failed to set public properties cache", e);
       }
 
       res.setHeader("Cache-Control", "public, max-age=30");
-      res.json(results || []);
+      res.json(cache.data || []);
     });
   } catch (error) {
     console.error("Get public properties error:", error);
@@ -266,14 +279,31 @@ export const deleteProperty = (req, res) => {
 
     try {
       // 2️⃣ Delete images from Cloudinary
+      // Be robust when deriving Cloudinary public_id from the stored URL.
+      // Cloudinary URLs are typically like: /upload/v12345/folder/subfolder/name.jpg
+      // We strip the '/upload/' prefix, remove the version segment and extension.
       for (const img of images) {
-        const publicId = img.image_url
-          .split("/")
-          .slice(-2)
-          .join("/")
-          .split(".")[0];
+        try {
+          const url = img.image_url || "";
+          const uploadIdx = url.indexOf("/upload/");
+          let publicId;
 
-        await cloudinary.uploader.destroy(publicId);
+          if (uploadIdx !== -1) {
+            publicId = url.substring(uploadIdx + "/upload/".length);
+            // remove version prefix like v123456/ if present
+            publicId = publicId.replace(/^v\d+\//, "");
+            // remove file extension
+            publicId = publicId.replace(/\.[^/.]+$/, "");
+          } else {
+            // fallback to previous heuristic
+            publicId = img.image_url.split("/").slice(-2).join("/").split(".")[0];
+          }
+
+          await cloudinary.uploader.destroy(publicId);
+        } catch (destroyErr) {
+          console.warn("Cloudinary destroy failed for", img.image_url, destroyErr);
+          // continue deleting other images even if one fails
+        }
       }
 
       // 3️⃣ Delete property (CASCADE will handle images if set, else manual)
