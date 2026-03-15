@@ -2,6 +2,15 @@ import db from "../config/db.js";
 import cloudinary from "../config/cloudinary.js";
 import cache from "../config/cache.js";
 
+const slugify = (text) => {
+  if (!text) return "";
+  return String(text)
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+};
+
 /* ADD PROPERTY */
 export const addProperty = async (req, res) => {
   try {
@@ -61,6 +70,16 @@ export const addProperty = async (req, res) => {
     ]);
 
     const propertyId = result.insertId;
+
+    // Persist a stable slug for the property (used by the public detail page)
+    // Format: <slugified-name>-<id> (unique and friendly)
+    const slug = `${slugify(name)}-${propertyId}`;
+    try {
+      await db.execute("UPDATE properties SET slug = ? WHERE id = ?", [slug, propertyId]);
+    } catch (e) {
+      // If the slug column doesn't exist yet (older deployments), ignore.
+      console.warn("Unable to persist property slug:", e && e.message ? e.message : e);
+    }
 
     if (imageUrls && imageUrls.length) {
       const imageSql = `INSERT INTO property_images (property_id, image_url) VALUES ?`;
@@ -126,6 +145,7 @@ export const getPublicProperties = (req, res) => {
       const sql = `
         SELECT 
           p.id,
+          p.slug,
           p.name,
           p.address,
           p.location,
@@ -183,13 +203,14 @@ export const getPublicProperties = (req, res) => {
 
 
 /* GET SINGLE PUBLIC PROPERTY */
-export const getPublicPropertyBySlug = (req, res) => {
+export const getPublicPropertyBySlug = async (req, res) => {
   const { slug } = req.params;
-  const name = slug.replace(/-/g, " ");
+  const normalizedSlug = slugify(slug);
 
-  const sql = `
+  const buildDetailQuery = (whereClause) => `
     SELECT 
       p.id,
+      p.slug,
       p.name,
       p.address,
       p.location,
@@ -200,24 +221,87 @@ export const getPublicPropertyBySlug = (req, res) => {
       p.description,
       p.latitude,
       p.longitude,
-        (
-          SELECT GROUP_CONCAT(pi.image_url)
-          FROM property_images pi
-          WHERE pi.property_id = p.id
-        ) AS images,
-        EXISTS(
-          SELECT 1 FROM bookings b
-          WHERE b.property_id = p.id
-            AND b.payment_status = 'paid'
-            AND CURDATE() >= b.check_in
-            AND CURDATE() < b.check_out
-        ) AS is_booked
+      (
+        SELECT GROUP_CONCAT(pi.image_url)
+        FROM property_images pi
+        WHERE pi.property_id = p.id
+      ) AS images,
+      EXISTS(
+        SELECT 1 FROM bookings b
+        WHERE b.property_id = p.id
+          AND b.payment_status = 'paid'
+          AND CURDATE() >= b.check_in
+          AND CURDATE() < b.check_out
+      ) AS is_booked
     FROM properties p
     WHERE LOWER(p.status) = 'available'
-      AND LOWER(p.name) = LOWER(?)
+      AND ${whereClause}
     LIMIT 1
   `;
 
+  const getPropertyById = (id) => new Promise((resolve, reject) => {
+    const sql = buildDetailQuery('p.id = ?');
+    db.query(sql, [id], (err, results) => {
+      if (err) return reject(err);
+      const prop = results && results[0] ? results[0] : null;
+      if (prop) prop.images = prop.images ? prop.images.split(",") : [];
+      resolve(prop);
+    });
+  });
+
+  const getPropertyBySlugColumn = (slugValue) => new Promise((resolve, reject) => {
+    const sql = buildDetailQuery('LOWER(p.slug) = LOWER(?)');
+    db.query(sql, [slugValue], (err, results) => {
+      if (err) return reject(err);
+      const prop = results && results[0] ? results[0] : null;
+      if (prop) prop.images = prop.images ? prop.images.split(",") : [];
+      resolve(prop);
+    });
+  });
+
+  // 1) Attempt to resolve using cached public properties (fast, consistent with list page)
+  try {
+    const cached = cache.get ? await cache.get('public:properties') : null;
+    if (Array.isArray(cached)) {
+      const candidate = cached.find((p) => {
+        if (!p) return false;
+        const candidates = new Set();
+        if (p.slug) candidates.add(slugify(p.slug));
+        if (p.name) candidates.add(slugify(p.name));
+        if (p.id && p.name) candidates.add(`${slugify(p.name)}-${p.id}`);
+        return candidates.has(normalizedSlug);
+      });
+
+      if (candidate && candidate.id) {
+        const detail = await getPropertyById(candidate.id);
+        if (detail) {
+          console.log('✅ Property retrieved (cache match):', detail.name);
+          return res.json(detail);
+        }
+      }
+    }
+  } catch (cacheErr) {
+    console.warn('Cache lookup error in getPublicPropertyBySlug:', cacheErr);
+  }
+
+  // 2) Try direct slug column match (newer deployments)
+  try {
+    const bySlug = await getPropertyBySlugColumn(normalizedSlug);
+    if (bySlug) {
+      console.log('✅ Property retrieved (slug column):', bySlug.name);
+      return res.json(bySlug);
+    }
+  } catch (err) {
+    // If the slug column does not exist, fall back without failing hard.
+    if (!/Unknown column/.test(err.message || '')) {
+      console.error('Error querying by slug column:', err);
+    }
+  }
+
+  // 3) Fallback to name-based matching (existing behavior)
+  const name = slug.replace(/-/g, " ");
+
+  const sql = buildDetailQuery('LOWER(p.name) = LOWER(?)');
   db.query(sql, [name], (err, results) => {
     if (err) {
       console.error("Error fetching property by slug:", err);
@@ -227,42 +311,11 @@ export const getPublicPropertyBySlug = (req, res) => {
     if (!results?.length) {
       console.warn(`Property not found with slug (exact match): ${slug}. Trying permissive search.`);
 
-      // Try a permissive fallback: match slug against a slugified name or partial LIKE match.
-      // This helps when names contain punctuation, extra whitespace, or slight variations.
-      const permissiveSql = `
-        SELECT 
-          p.id,
-          p.name,
-          p.address,
-          p.location,
-          p.price,
-          p.max_guests,
-          p.bedrooms,
-          p.bathrooms,
-          p.description,
-          p.latitude,
-          p.longitude,
-          (
-            SELECT GROUP_CONCAT(pi.image_url)
-            FROM property_images pi
-            WHERE pi.property_id = p.id
-          ) AS images,
-          EXISTS(
-            SELECT 1 FROM bookings b
-            WHERE b.property_id = p.id
-              AND b.payment_status = 'paid'
-              AND CURDATE() >= b.check_in
-              AND CURDATE() < b.check_out
-          ) AS is_booked
-        FROM properties p
-        WHERE LOWER(p.status) = 'available'
-          AND (
-            LOWER(p.name) = LOWER(?)
-            OR LOWER(REPLACE(p.name, ' ', '-')) = LOWER(?)
-            OR LOWER(p.name) LIKE CONCAT('%', ?, '%')
-          )
-        LIMIT 1
-      `;
+      const permissiveSql = buildDetailQuery(`(
+        LOWER(p.name) = LOWER(?)
+        OR LOWER(REPLACE(p.name, ' ', '-')) = LOWER(?)
+        OR LOWER(p.name) LIKE CONCAT('%', ?, '%')
+      )`);
 
       const slugified = slug; // e.g., '3-bedroom-apartment'
       const likePattern = name; // '3 bedroom apartment' will be used in LIKE
