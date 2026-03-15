@@ -22,3 +22,8 @@ export const createBooking = (booking) => {
     booking.booking_reference
   ]);
 };
+
+export const updateBookingPaymentStatus = async (booking_reference, payment_status = 'paid') => {
+  const sql = `UPDATE bookings SET payment_status = ?, status = CASE WHEN ? = 'paid' THEN 'paid' ELSE status END, updated_at = CURRENT_TIMESTAMP WHERE booking_reference = ?`;
+  await db.execute(sql, [payment_status, payment_status, booking_reference]);
+};

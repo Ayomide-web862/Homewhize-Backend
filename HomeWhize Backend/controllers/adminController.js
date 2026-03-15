@@ -7,6 +7,8 @@ import {
   deleteUserById,
   findUserById,
 } from "../models/userModel.js";
+import db from "../config/db.js";
+import { generateSlug } from "../models/providerModel.js";
 import { sendWelcomeEmail, sendKYCReminderEmail } from "../utils/emailService.js";
 
 /**
@@ -84,6 +86,10 @@ export const createOwner = async (req, res) => {
       createUser(name, email, hashedPassword, role, "local", (err, result) => {
         if (err) {
           console.error("Create owner error:", err);
+          // Detect enum/data truncation errors and give actionable message
+          if (err && err.errno === 1265) {
+            return res.status(500).json({ message: "Database rejected the role value. Ensure the 'cleaner' role is added to users.role enum (run migrations)." });
+          }
           return res.status(500).json({ message: "Failed to create owner account" });
         }
 
@@ -117,6 +123,76 @@ export const createOwner = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Create user + provider atomically
+export const createProvider = async (req, res) => {
+  let connection;
+  try {
+    const { company_name, email, phone, address, categories = '', role = 'cleaner' } = req.body;
+
+    // Basic server-side validation
+    if (!company_name || !email) return res.status(400).json({ message: 'company_name and email are required' });
+    const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    if (!emailRe.test(String(email).toLowerCase())) return res.status(400).json({ message: 'Invalid email format' });
+
+    // Start transaction
+    connection = await new Promise((resolve, reject) => db.getConnection((err, conn) => err ? reject(err) : resolve(conn)));
+    const connP = connection.promise();
+    await connP.beginTransaction();
+
+    // Check email exists
+    const [existing] = await connP.execute('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
+    if (existing && existing.length > 0) {
+      await connP.rollback();
+      connection.release();
+      return res.status(400).json({ message: 'Email already exists' });
+    }
+
+    const tempPassword = 'Homewhize@2026';
+    const hashed = await bcrypt.hash(tempPassword, 10);
+
+    // Create user
+    const [userRes] = await connP.execute(
+      'INSERT INTO users (name, email, password, role, provider) VALUES (?, ?, ?, ?, ?)',
+      [company_name, email, hashed, role, 'local']
+    );
+    const userId = userRes.insertId;
+
+    // Create provider row (ensure slug uniqueness)
+    let slugBase = generateSlug(company_name || 'provider');
+    let slug = slugBase;
+    let attempts = 0;
+    while (attempts < 5) {
+      const [existing] = await connP.execute('SELECT id FROM providers WHERE slug = ? LIMIT 1', [slug]);
+      if (!existing || existing.length === 0) break;
+      slug = `${slugBase}-${Math.floor(1000 + Math.random() * 9000)}`;
+      attempts++;
+    }
+
+    const [providerRes] = await connP.execute(
+      `INSERT INTO providers (company_name, slug, email, phone, address, categories, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [company_name, slug, email, phone || null, address || null, categories || '', userId]
+    );
+    const providerId = providerRes.insertId;
+
+    // Fetch the created provider to return a consistent object
+    const [createdRows] = await connP.execute('SELECT * FROM providers WHERE id = ? LIMIT 1', [providerId]);
+    const createdProvider = createdRows && createdRows[0] ? createdRows[0] : null;
+
+    await connP.commit();
+    connection.release();
+
+    // Send emails after commit (non-blocking)
+    sendWelcomeEmail(company_name, email, tempPassword, role).catch((e) => console.warn('Welcome email failed:', e));
+    setTimeout(() => sendKYCReminderEmail(company_name, email).catch(e => console.warn('KYC email failed:', e)), 1000);
+
+    return res.status(201).json({ message: 'Provider and user created', userId, provider: createdProvider });
+  } catch (err) {
+    try { if (connection) await connection.promise().rollback(); if (connection) connection.release(); } catch (e) {}
+    console.error('createProvider atomic error:', err);
+    return res.status(500).json({ message: 'Failed to create provider and user', error: err.message });
   }
 };
 

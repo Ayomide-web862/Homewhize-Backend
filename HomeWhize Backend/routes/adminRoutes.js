@@ -7,6 +7,7 @@ import {
   createOwner,
   updateAdmin,
   deleteAdmin,
+  createProvider as createProviderAtomic,
 } from "../controllers/adminController.js";
 
 const router = express.Router();
@@ -23,6 +24,14 @@ router.post(
   protect,
   roleMiddleware("superadmin", "master", "admin"),
   createOwner
+);
+
+// Create user + provider atomically (preferred over two-step create)
+router.post(
+  "/create-provider",
+  protect,
+  roleMiddleware("superadmin", "master", "admin"),
+  createProviderAtomic
 );
 
 router.get(

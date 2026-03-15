@@ -1,4 +1,4 @@
-import { sendEmailSafely } from "../config/emailConfig.js";
+import { sendEmailSafely, getDefaultFrom } from "../config/emailConfig.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -52,7 +52,7 @@ export const sendSignupEmail = async (user, signupMethod = "manual") => {
     }
 
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: getDefaultFrom(),
       to: email,
       subject: subject,
       html: html,
@@ -84,7 +84,7 @@ export const sendWelcomeEmail = async (name, email, tempPassword, role = "owner"
     const html = getWelcomeTemplate(name, email, tempPassword, role);
 
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: getDefaultFrom(),
       to: email,
       subject: subject,
       html: html,
@@ -114,7 +114,7 @@ export const sendPasswordChangeEmail = async (name, email) => {
     const html = getPasswordChangeTemplate(name, email);
 
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: getDefaultFrom(),
       to: email,
       subject: subject,
       html: html,
@@ -144,7 +144,7 @@ export const sendKYCReminderEmail = async (name, email) => {
     const html = getKYCReminderTemplate(name, email);
 
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: getDefaultFrom(),
       to: email,
       subject: subject,
       html: html,

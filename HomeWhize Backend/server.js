@@ -15,10 +15,40 @@ import communityRoutes from "./routes/communityRoutes.js";
 import passwordRouter from "./routes/passwordRouter.js";
 import kycRoutes from "./routes/kycRoutes.js";
 import bookingRoutes from "./routes/bookingRoutes.js";
+// chatRoutes removed
+import paymentRoutes from "./routes/paymentRoutes.js";
+import { paystackWebhook } from "./controllers/paymentController.js";
+import providerRoutes from "./routes/providerRoutes.js";
 import db from "./config/db.js";
 import { verifyEmailConnection } from "./config/emailConfig.js";
+import fs from 'fs/promises';
 
 dotenv.config();
+
+// Ensure `fetch` exists in older Node versions by polyfilling with node-fetch if necessary.
+// Node 18+ provides global fetch; on older runtimes, prefer installing `node-fetch`.
+if (typeof fetch === "undefined") {
+  try {
+    const { default: fetchPoly } = await import('node-fetch');
+    global.fetch = fetchPoly;
+    console.log('Polyfilled global.fetch using node-fetch');
+  } catch (err) {
+    console.warn('Global fetch not available and node-fetch not installed. Please use Node 18+ or install node-fetch.');
+  }
+}
+
+// Log Paystack secret presence (masked) and whether it's test or live to aid debugging
+try {
+  const key = process.env.PAYSTACK_SECRET_KEY;
+  if (key) {
+    const kind = /^sk_live_/.test(key) ? 'live' : /^sk_test_/.test(key) ? 'test' : 'unknown';
+    console.log(`[PAYSTACK] secret configured (${kind})`);
+  } else {
+    console.warn('[PAYSTACK] PAYSTACK_SECRET_KEY not set');
+  }
+} catch (e) {
+  // ignore
+}
 
 const app = express();
 
@@ -139,21 +169,7 @@ app.use(
 // Enable gzip/deflate compression for responses to reduce payload size
 app.use(compression());
 
-// Optional: serve a built frontend (upload `dist` to `public/` or set `FRONTEND_DIST_PATH`)
-if (process.env.SERVE_FRONTEND === "true") {
-  const frontendDist = process.env.FRONTEND_DIST_PATH || path.join(__dirname, "public");
-  app.use(express.static(frontendDist));
-
-  // Fallback to index.html for client-side routing, but ignore API routes
-  app.get("*", (req, res, next) => {
-    if (req.path.startsWith("/api")) return next();
-    res.sendFile(path.join(frontendDist, "index.html"), (err) => {
-      if (err) next();
-    });
-  });
-
-  console.log("Serving frontend from:", frontendDist);
-}
+// NOTE: Frontend serving via backend removed to allow explicit frontend dev/static hosting.
 
 
 app.get("/", (req, res) => {
@@ -163,6 +179,38 @@ app.get("/", (req, res) => {
     timestamp: new Date().toISOString(),
     allowedOrigins: allowedOrigins,
   });
+});
+
+// Lightweight health endpoint for external monitors (DB + Email checks)
+app.get('/api/health', async (req, res) => {
+  const health = { uptime: process.uptime(), timestamp: new Date().toISOString() };
+  try {
+    // DB check
+    try {
+      const [rows] = await db.execute('SELECT 1 AS ok');
+      health.db = Array.isArray(rows) ? 'ok' : 'unknown';
+    } catch (dbe) {
+      console.warn('DB health check failed:', dbe.message || dbe);
+      health.db = 'error';
+      health.dbError = (dbe && dbe.message) ? dbe.message : String(dbe);
+    }
+
+    // Email check (non-fatal) - verify connection but do not fail overall if email is not configured
+    try {
+      const emailOk = await verifyEmailConnection();
+      health.email = emailOk ? 'ok' : 'unavailable';
+    } catch (ee) {
+      console.warn('Email health check failed:', ee && ee.message ? ee.message : ee);
+      health.email = 'error';
+      health.emailError = (ee && ee.message) ? ee.message : String(ee);
+    }
+
+    const statusCode = (health.db === 'ok') ? 200 : 503;
+    res.status(statusCode).json(health);
+  } catch (err) {
+    console.error('Health endpoint error:', err);
+    res.status(500).json({ message: 'Health check failed' });
+  }
 });
 
 console.log("   Backend initialized");
@@ -219,6 +267,78 @@ console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
   }
 })();
 
+// Run SQL migrations in migrations/ directory with a simple tracking table
+(async () => {
+  try {
+    // Ensure migrations table exists
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS migrations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL UNIQUE,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    const migrationsDir = path.join(__dirname, 'migrations');
+    const files = await fs.readdir(migrationsDir);
+    const sqlFiles = files.filter(f => f.endsWith('.sql')).sort();
+
+    // Get already applied
+    const [rows] = await db.execute('SELECT filename FROM migrations');
+    const applied = new Set((rows || []).map(r => r.filename));
+
+    for (const f of sqlFiles) {
+      if (applied.has(f)) {
+        console.log('Skipping already-applied migration:', f);
+        continue;
+      }
+
+      try {
+        const content = await fs.readFile(path.join(migrationsDir, f), 'utf8');
+        if (content && content.trim()) {
+          console.log('Applying migration:', f);
+          const parts = content
+            .split(';')
+            .map(p => p.trim())
+            .filter(p => p.length > 0 && !p.startsWith('--'));
+
+          let hadFatal = false;
+          for (const stmt of parts) {
+            try {
+              await db.execute(stmt);
+            } catch (stmtErr) {
+              // If statement has benign 'already exists' error, ignore; otherwise mark as fatal
+              const msg = (stmtErr && stmtErr.message) ? stmtErr.message.toLowerCase() : '';
+              if (msg.includes('already exists') || msg.includes('duplicate') || msg.includes('errno 1050') ) {
+                console.log(`Non-fatal migration message for ${f}:`, stmtErr.message || stmtErr);
+                continue;
+              }
+              console.warn(`Fatal error running statement in ${f}:`, stmtErr.message || stmtErr);
+              hadFatal = true;
+              break;
+            }
+          }
+
+          if (!hadFatal) {
+            try {
+              await db.execute('INSERT INTO migrations (filename) VALUES (?)', [f]);
+              console.log('Recorded migration:', f);
+            } catch (recErr) {
+              console.warn('Could not record migration', f, recErr.message || recErr);
+            }
+          } else {
+            console.warn('Migration not recorded due to fatal error:', f);
+          }
+        }
+      } catch (mfErr) {
+        console.warn('Could not apply migration', f, mfErr.message || mfErr);
+      }
+    }
+  } catch (err) {
+    console.warn('Migration runner error:', err.message || err);
+  }
+})();
+
 // Verify email configuration on startup
 (async () => {
   try {
@@ -240,8 +360,19 @@ app.use("/api/community", communityRoutes);
 app.use("/api/auth/password", authLimiter, passwordRouter);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/bookings", bookingRoutes);
-import paymentRoutes from "./routes/paymentRoutes.js";
+// conversations/chat routes removed
+// Mount payments routes
 app.use("/api/payments", paymentRoutes);
+
+// Dedicated webhook endpoint: use raw body parser so we can verify Paystack HMAC signature
+app.post(
+  "/api/payments/webhook",
+  express.raw({ type: "application/json" }),
+  paystackWebhook
+);
+app.use("/api/providers", providerRoutes);
+// Providers API removed per request
+// serviceBookingRoutes removed
 
 
 
@@ -275,11 +406,81 @@ const PORT = process.env.PORT || 5000;
 // Passenger will `require()` this file and expect the app to be exported. To support
 // both local and Passenger startup, only call `app.listen` when not running under
 // Passenger. Set env `PASSENGER_APP=true` on your cPanel app to disable manual listen.
+let server = null;
 if (process.env.PASSENGER_APP === "true" || process.env.PASSENGER === "true") {
-  // Passenger will `require()` this file and expect the app to be exported
   console.log("Passenger mode detected - exporting app for Passenger / cPanel startup");
 } else {
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
+
+// Graceful shutdown
+const shutdown = async (signal) => {
+  console.log(`Received ${signal}. Shutting down gracefully...`);
+  try {
+    if (server) {
+      server.close(() => console.log('HTTP server closed'));
+    }
+    // Close DB pool
+    try {
+      await db.closePool();
+      console.log('MySQL pool closed');
+    } catch (dberr) {
+      console.warn('Error closing DB pool:', dberr && dberr.message ? dberr.message : dberr);
+    }
+    // Allow some time for pending requests/logs
+    setTimeout(() => process.exit(0), 500);
+  } catch (err) {
+    console.error('Error during shutdown:', err);
+    process.exit(1);
+  }
+};
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// Socket.io: initialize if server available
+try {
+  if (server) {
+    const { Server } = await import('socket.io');
+    const io = new Server(server, {
+      cors: {
+        origin: allowedOrigins,
+        methods: ['GET','POST']
+      }
+    });
+
+    // Basic Socket.io handlers
+    io.on('connection', (socket) => {
+      console.log('Socket connected', socket.id);
+
+      // Join conversation room
+      socket.on('join', ({ conversationId }) => {
+        if (conversationId) socket.join(`conv_${conversationId}`);
+      });
+
+      // Provider or user emits message
+      socket.on('message', async (payload) => {
+        try {
+          // payload: { conversationId, senderRole, senderId, text }
+          const { conversationId, senderRole, senderId, text } = payload;
+          // Persist message
+          const { createMessage } = await import('./models/messageModel.js');
+          const id = await createMessage(conversationId, senderRole, senderId, text);
+          const message = { id, conversationId, senderRole, senderId, text, created_at: new Date() };
+          // Broadcast to room
+          io.to(`conv_${conversationId}`).emit('message', message);
+        } catch (err) {
+          console.error('Socket message error', err);
+        }
+      });
+
+      socket.on('disconnect', () => {
+        console.log('Socket disconnected', socket.id);
+      });
+    });
+  }
+} catch (err) {
+  console.warn('Socket.io not initialized:', err && err.message ? err.message : err);
 }
 
 // Export the Express app for environments (like Phusion Passenger) that require it.

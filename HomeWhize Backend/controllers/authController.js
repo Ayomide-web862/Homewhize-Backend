@@ -6,8 +6,8 @@ import { sendSignupEmail, sendPasswordChangeEmail, sendKYCReminderEmail } from "
 
 dotenv.config();
 
-// Allowed roles
-const allowedRoles = ["user", "admin", "superadmin", "master"];
+// Allowed roles (added 'cleaner' for service providers)
+const allowedRoles = ["user", "admin", "superadmin", "master", "cleaner"];
 
 export const registerUser = (req, res) => {
   try {

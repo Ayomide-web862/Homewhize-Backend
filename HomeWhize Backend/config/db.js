@@ -39,6 +39,13 @@ const db = {
   query: (...args) => pool.query(...args),
   execute: (...args) => promisePool.execute(...args),
   getConnection: (...args) => pool.getConnection(...args),
+  // Close the underlying pool (useful for graceful shutdown)
+  closePool: () => new Promise((resolve, reject) => {
+    pool.end((err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  })
 };
 
 export default db;

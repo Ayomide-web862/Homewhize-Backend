@@ -1,4 +1,5 @@
 import { createBooking } from "../models/bookingModel.js";
+import db from "../config/db.js";
 import crypto from "crypto";
 
 export const createNewBooking = async (req, res) => {
@@ -36,6 +37,23 @@ export const createNewBooking = async (req, res) => {
     const nights = Math.ceil(
       (checkOut - checkIn) / (1000 * 60 * 60 * 24)
     );
+
+    // Prevent double-booking: ensure there is no paid booking that overlaps requested dates
+    try {
+      const overlapSql = `
+        SELECT COUNT(*) AS cnt FROM bookings b
+        WHERE b.property_id = ?
+          AND b.payment_status = 'paid'
+          AND NOT (b.check_out <= ? OR b.check_in >= ?)
+      `;
+      const [rows] = await db.execute(overlapSql, [property_id, checkIn.toISOString().slice(0,10), checkOut.toISOString().slice(0,10)]);
+      const cnt = rows && rows[0] && rows[0].cnt ? Number(rows[0].cnt) : 0;
+      if (cnt > 0) {
+        return res.status(409).json({ message: 'Selected dates are already booked' });
+      }
+    } catch (checkErr) {
+      console.warn('Failed to check overlapping bookings:', checkErr);
+    }
 
     const total_amount = nights * price_per_night;
 

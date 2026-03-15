@@ -29,6 +29,8 @@ function createTransporter() {
   const service = process.env.EMAIL_SERVICE || "gmail";
   const emailUser = process.env.EMAIL_USER;
   const emailPass = process.env.EMAIL_PASS;
+  // Optional explicit from-address (fall back to EMAIL_USER)
+  const emailFrom = process.env.EMAIL_FROM || emailUser;
 
   if (!emailUser || !emailPass) {
     console.error("❌ EMAIL_USER and EMAIL_PASS are required in .env");
@@ -51,6 +53,11 @@ function createTransporter() {
       const emailHost = process.env.EMAIL_HOST;
       const emailPort = parseInt(process.env.EMAIL_PORT || "587", 10);
       const emailSecure = process.env.EMAIL_SECURE === "true";
+      const connTimeout = parseInt(process.env.EMAIL_CONN_TIMEOUT || "10000", 10);
+      const greetTimeout = parseInt(process.env.EMAIL_GREETING_TIMEOUT || "10000", 10);
+      const socketTimeout = parseInt(process.env.EMAIL_SOCKET_TIMEOUT || "20000", 10);
+      const enableLogger = process.env.EMAIL_LOGGER === 'true';
+      const enableDebug = process.env.EMAIL_DEBUG === 'true';
 
       if (!emailHost) {
         console.error("❌ EMAIL_HOST is required for custom SMTP");
@@ -65,13 +72,22 @@ function createTransporter() {
           user: emailUser,
           pass: emailPass,
         },
+        // Allow tuning of timeouts and debug options via env
+        connectionTimeout: connTimeout,
+        greetingTimeout: greetTimeout,
+        socketTimeout: socketTimeout,
+        logger: enableLogger,
+        debug: enableDebug,
+        // Optional: allow self-signed certs if explicitly enabled in .env
+        tls: process.env.EMAIL_ALLOW_SELF_SIGNED === 'true' ? { rejectUnauthorized: false } : undefined,
       });
     }
 
     console.log(`✅ Email transporter configured: ${service}`);
     return transporter;
   } catch (err) {
-    console.error("❌ Failed to create email transporter:", err.message);
+    console.error("❌ Failed to create email transporter:", err && err.message ? err.message : err);
+    if (err && err.stack) console.error(err.stack);
     return null;
   }
 }
@@ -93,8 +109,58 @@ export async function verifyEmailConnection() {
     console.log("✅ Email transporter connection verified");
     return true;
   } catch (err) {
-    console.warn("⚠️ Email transporter verification failed:", err.message);
+    // Provide richer diagnostic output for connection failures
+    const host = transporter && transporter.options && transporter.options.host ? transporter.options.host : process.env.EMAIL_HOST;
+    const port = transporter && transporter.options && transporter.options.port ? transporter.options.port : process.env.EMAIL_PORT;
+    console.warn(`⚠️ Email transporter verification failed to ${host}:${port} —`, err && err.message ? err.message : err);
+    if (err && err.code) console.warn('Error code:', err.code);
+    if (err && err.response) console.warn('SMTP response:', err.response);
+    if (err && err.stack) console.debug(err.stack);
     // Don't fail app startup; email is not critical
+    // Attempt fallback strategies for common network issues (only for custom SMTP)
+    try {
+      if ((process.env.EMAIL_SERVICE || 'gmail') === 'custom') {
+        const hostEnv = process.env.EMAIL_HOST;
+        const tried = new Set();
+        const originalPort = parseInt(process.env.EMAIL_PORT || '587', 10);
+        const candidates = [originalPort, 465, 587];
+
+        for (const p of candidates) {
+          if (!p || tried.has(p)) continue;
+          tried.add(p);
+          const secureTry = p === 465;
+          console.log(`🔁 Trying SMTP fallback ${hostEnv}:${p} secure=${secureTry}`);
+          try {
+            const t = nodemailer.createTransport({
+              host: hostEnv,
+              port: p,
+              secure: secureTry,
+              auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
+              },
+              connectionTimeout: parseInt(process.env.EMAIL_CONN_TIMEOUT || '10000', 10),
+              greetingTimeout: parseInt(process.env.EMAIL_GREETING_TIMEOUT || '10000', 10),
+              socketTimeout: parseInt(process.env.EMAIL_SOCKET_TIMEOUT || '20000', 10),
+              tls: process.env.EMAIL_ALLOW_SELF_SIGNED === 'true' ? { rejectUnauthorized: false } : undefined,
+            });
+
+            // Verify this transporter quickly
+            await t.verify();
+            // success — replace global transporter and return true
+            transporter = t;
+            console.log(`✅ Email transporter fallback succeeded: ${hostEnv}:${p} secure=${secureTry}`);
+            return true;
+          } catch (retryErr) {
+            console.warn(`Fallback attempt to ${hostEnv}:${p} failed:`, retryErr && retryErr.message ? retryErr.message : retryErr);
+            // continue to next candidate
+          }
+        }
+      }
+    } catch (fallbackErr) {
+      console.debug('Fallback verification attempts failed or errored:', fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr);
+    }
+
     return false;
   }
 }
@@ -107,6 +173,11 @@ export function getTransporter() {
     transporter = createTransporter();
   }
   return transporter;
+}
+
+// Helper to build default "from" address used across the app
+export function getDefaultFrom() {
+  return process.env.EMAIL_FROM || process.env.EMAIL_USER || "noreply@localhost";
 }
 
 /**

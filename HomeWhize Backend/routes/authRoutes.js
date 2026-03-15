@@ -19,7 +19,7 @@ router.post(
 		check("name").isString().trim().isLength({ min: 2 }),
 		check("email").isEmail().normalizeEmail(),
 		check("password").isLength({ min: 8 }),
-		check("role").optional().isIn(["user", "admin", "superadmin", "master"]),
+		check("role").optional().isIn(["user", "admin", "superadmin", "master", "cleaner"]),
 	]),
 	registerUser
 );

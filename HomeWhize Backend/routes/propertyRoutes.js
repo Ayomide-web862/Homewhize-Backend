@@ -1,13 +1,13 @@
 import express from "express";
 import upload from "../middleware/upload.js";
 import { protect, roleMiddleware } from "../middleware/authMiddleware.js";
-import { deleteProperty } from "../controllers/propertyController.js";
-import { getPublicPropertyBySlug } from "../controllers/propertyController.js";
-
 import {
+  deleteProperty,
+  getPublicPropertyBySlug,
   addProperty,
   getProperties,
-  getPublicProperties
+  getPublicProperties,
+  getPropertyAvailability
 } from "../controllers/propertyController.js";
 
 const router = express.Router();
@@ -40,6 +40,9 @@ router.delete(
 router.get("/public/slug/:slug", getPublicPropertyBySlug);
 
 router.get("/public", getPublicProperties);
+
+// Availability check for a property: ?check_in=YYYY-MM-DD&check_out=YYYY-MM-DD
+router.get("/:id/availability", getPropertyAvailability);
 
 
 export default router;

@@ -1,5 +1,6 @@
 import db from "../config/db.js";
 import cloudinary from "../config/cloudinary.js";
+import cache from "../config/cache.js";
 
 /* ADD PROPERTY */
 export const addProperty = async (req, res) => {
@@ -19,93 +20,61 @@ export const addProperty = async (req, res) => {
       longitude
     } = req.body;
 
-    const adminId = req.user.id;
+    const files = req.files || [];
+    const adminId = req.user && req.user.id ? req.user.id : null;
 
-    // Normalize multer's `req.files` whether it's an array (upload.array)
-    // or an object of arrays (upload.fields). This makes uploads resilient
-    // to frontend naming differences like `images` vs `images[]`.
-    let files = [];
-    if (Array.isArray(req.files)) files = req.files;
-    else if (req.files && typeof req.files === "object") {
-      files = Object.values(req.files).flat();
+    // Upload images if present
+    let imageUrls = [];
+    if (files && files.length) {
+      const uploadPromises = files.map((file) =>
+        new Promise((resolve, reject) => {
+          cloudinary.uploader.upload_stream({ folder: "properties" }, (error, result) => {
+            if (error) return reject(error);
+            resolve(result.secure_url);
+          }).end(file.buffer);
+        })
+      );
+      imageUrls = await Promise.all(uploadPromises);
     }
 
-    console.log("Received files:", files.length);
-
-    if (!files || files.length === 0) {
-      console.log("FILES:", req.files);
-      return res.status(400).json({
-        message: "At least one image is required",
-      });
-    }
-
-    /* UPLOAD IMAGES */
-    const uploadPromises = files.map((file) =>
-      new Promise((resolve, reject) => {
-        cloudinary.uploader.upload_stream(
-          { folder: "properties" },
-          (error, result) => {
-            if (error) reject(error);
-            else resolve(result.secure_url);
-          }
-        ).end(file.buffer);
-      })
-    );
-
-    const imageUrls = await Promise.all(uploadPromises);
-
-    /* INSERT PROPERTY */
-    const propertySql = `
+    const insertSql = `
       INSERT INTO properties
       (name, address, location, price, property_type, bedrooms, bathrooms, max_guests,
        status, description, latitude, longitude, admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    db.query(
-      propertySql,
-      [
-        name,
-        address,
-        location,
-        Number(price),
-        propertyType,
-        Number(bedrooms),
-        Number(bathrooms),
-        Number(maxGuests),
-        status,
-        description,
-        latitude || null,
-        longitude || null,
-        adminId
-      ],
-      (err, result) => {
-        if (err) {
-          console.error(err);
-          return res.status(500).json({ message: "Database error" });
-        }
+    const [result] = await db.execute(insertSql, [
+      name,
+      address,
+      location,
+      Number(price) || 0,
+      propertyType,
+      Number(bedrooms) || 0,
+      Number(bathrooms) || 0,
+      Number(maxGuests) || 0,
+      status || 'available',
+      description || '',
+      latitude || null,
+      longitude || null,
+      adminId,
+    ]);
 
-        const propertyId = result.insertId;
+    const propertyId = result.insertId;
 
-        /* INSERT IMAGES */
-        const imageSql =
-          "INSERT INTO property_images (property_id, image_url) VALUES ?";
+    if (imageUrls && imageUrls.length) {
+      const imageSql = `INSERT INTO property_images (property_id, image_url) VALUES ?`;
+      const imageValues = imageUrls.map((u) => [propertyId, u]);
+      await new Promise((resolve, reject) => db.query(imageSql, [imageValues], (e) => (e ? reject(e) : resolve())));
+    }
 
-        const imageValues = imageUrls.map(url => [propertyId, url]);
+    // Invalidate public properties cache
+    try { await cache.del('public:properties'); } catch (e) { /* ignore */ }
 
-        db.query(imageSql, [imageValues], (imgErr) => {
-          if (imgErr) {
-            console.error(imgErr);
-            return res.status(500).json({ message: "Image save failed" });
-          }
-
-          res.status(201).json({ message: "Property added successfully" });
-        });
-      }
-    );
+    res.status(201).json({ message: 'Property added successfully', id: propertyId });
   } catch (error) {
-    console.error("Add property error:", error);
-    res.status(500).json({ message: "Server error" });
+    console.error('Add property error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -144,69 +113,70 @@ export const getProperties = (req, res) => {
 /* PUBLIC PROPERTIES */
 export const getPublicProperties = (req, res) => {
   try {
-    // Simple in-memory cache to reduce DB load for public properties.
-    // TTL is short so admins/admin changes reflect quickly while still
-    // improving latency for anonymous users.
-  } catch (e) {
-    // fallthrough
-  }
-  try {
-    const TTL_MS = 30 * 1000; // 30 seconds
-    if (!global.__publicPropertiesCache) global.__publicPropertiesCache = {};
-    const cache = global.__publicPropertiesCache;
+    const TTL_MS = parseInt(process.env.PUBLIC_PROPERTIES_TTL_MS || String(30 * 1000), 10); // default 30s
+    const cacheKey = "public:properties";
 
-    // Return cached response when fresh
-    if (cache.data && Date.now() - cache.ts < TTL_MS) {
-      res.setHeader("Cache-Control", "public, max-age=30");
-      return res.json(cache.data);
-    }
-
-    const sql = `
-      SELECT 
-        p.id,
-        p.name,
-        p.address,
-        p.location,
-        p.price,
-        p.max_guests,
-        p.bedrooms,
-        p.bathrooms,
-        p.description,
-        GROUP_CONCAT(pi.image_url) AS images
-      FROM properties p
-      LEFT JOIN property_images pi ON p.id = pi.property_id
-      WHERE LOWER(p.status) = 'available'
-      GROUP BY p.id
-      ORDER BY p.created_at DESC
-    `;
-
-    db.query(sql, (err, results) => {
-      if (err) {
-        console.error("Public properties error:", err);
-        return res.status(500).json({ message: "Failed to load shortlets" });
+    const cachedPromise = cache.get ? cache.get(cacheKey) : Promise.resolve(null);
+    cachedPromise.then((cached) => {
+      if (cached) {
+        res.setHeader('Cache-Control', `public, max-age=${Math.ceil(TTL_MS/1000)}`);
+        return res.json(cached);
       }
-      console.log("Returning", results?.length || 0, "properties");
-      // cache results for TTL_MS and set cache-control header
-      try {
-        // Convert GROUP_CONCAT string to array for images
-        const formatted = (results || []).map((r) => ({
-          ...r,
-          images: r.images ? r.images.split(",") : [],
-          image_url: r.images ? r.images.split(",")[0] : null,
+
+      const sql = `
+        SELECT 
+          p.id,
+          p.name,
+          p.address,
+          p.location,
+          p.price,
+          p.max_guests,
+          p.bedrooms,
+          p.bathrooms,
+          p.description,
+          GROUP_CONCAT(pi.image_url) AS images,
+          EXISTS(
+            SELECT 1 FROM bookings b
+            WHERE b.property_id = p.id
+              AND b.payment_status = 'paid'
+              AND CURDATE() >= b.check_in
+              AND CURDATE() < b.check_out
+          ) AS is_booked
+        FROM properties p
+        LEFT JOIN property_images pi ON p.id = pi.property_id
+        WHERE LOWER(p.status) = 'available'
+        GROUP BY p.id
+        ORDER BY p.created_at DESC
+      `;
+
+      db.query(sql, [], async (err, results) => {
+        if (err) {
+          console.error('Get public properties query error:', err);
+          return res.status(500).json({ message: 'Server error' });
+        }
+
+        const formatted = (results || []).map((p) => ({
+          ...p,
+          images: p.images ? p.images.split(',') : [],
         }));
 
-        cache.data = formatted;
-        cache.ts = Date.now();
-      } catch (e) {
-        console.warn("Failed to set public properties cache", e);
-      }
+        try { await cache.set(cacheKey, formatted, TTL_MS); } catch (e) { /* ignore */ }
 
-      res.setHeader("Cache-Control", "public, max-age=30");
-      res.json(cache.data || []);
+        res.setHeader('Cache-Control', `public, max-age=${Math.ceil(TTL_MS/1000)}`);
+        res.json(formatted);
+      });
+    }).catch((cacheErr) => {
+      console.warn('Cache lookup error for public properties', cacheErr);
+      // fallback to DB query
+      db.query(`SELECT p.*, GROUP_CONCAT(pi.image_url) AS images FROM properties p LEFT JOIN property_images pi ON p.id = pi.property_id WHERE LOWER(p.status) = 'available' GROUP BY p.id ORDER BY p.created_at DESC`, [], (err, results) => {
+        if (err) return res.status(500).json({ message: 'Server error' });
+        const formatted = (results || []).map((p) => ({ ...p, images: p.images ? p.images.split(',') : [] }));
+        res.json(formatted);
+      });
     });
   } catch (error) {
-    console.error("Get public properties error:", error);
-    res.status(500).json({ message: "Server error" });
+    console.error('Get public properties error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -230,11 +200,18 @@ export const getPublicPropertyBySlug = (req, res) => {
       p.description,
       p.latitude,
       p.longitude,
-      (
-        SELECT GROUP_CONCAT(pi.image_url)
-        FROM property_images pi
-        WHERE pi.property_id = p.id
-      ) AS images
+        (
+          SELECT GROUP_CONCAT(pi.image_url)
+          FROM property_images pi
+          WHERE pi.property_id = p.id
+        ) AS images,
+        EXISTS(
+          SELECT 1 FROM bookings b
+          WHERE b.property_id = p.id
+            AND b.payment_status = 'paid'
+            AND CURDATE() >= b.check_in
+            AND CURDATE() < b.check_out
+        ) AS is_booked
     FROM properties p
     WHERE LOWER(p.status) = 'available'
       AND LOWER(p.name) = LOWER(?)
@@ -248,8 +225,64 @@ export const getPublicPropertyBySlug = (req, res) => {
     }
 
     if (!results?.length) {
-      console.warn(`Property not found with slug: ${slug}`);
-      return res.status(404).json({ message: "Shortlet not found" });
+      console.warn(`Property not found with slug (exact match): ${slug}. Trying permissive search.`);
+
+      // Try a permissive fallback: match slug against a slugified name or partial LIKE match.
+      // This helps when names contain punctuation, extra whitespace, or slight variations.
+      const permissiveSql = `
+        SELECT 
+          p.id,
+          p.name,
+          p.address,
+          p.location,
+          p.price,
+          p.max_guests,
+          p.bedrooms,
+          p.bathrooms,
+          p.description,
+          p.latitude,
+          p.longitude,
+          (
+            SELECT GROUP_CONCAT(pi.image_url)
+            FROM property_images pi
+            WHERE pi.property_id = p.id
+          ) AS images,
+          EXISTS(
+            SELECT 1 FROM bookings b
+            WHERE b.property_id = p.id
+              AND b.payment_status = 'paid'
+              AND CURDATE() >= b.check_in
+              AND CURDATE() < b.check_out
+          ) AS is_booked
+        FROM properties p
+        WHERE LOWER(p.status) = 'available'
+          AND (
+            LOWER(p.name) = LOWER(?)
+            OR LOWER(REPLACE(p.name, ' ', '-')) = LOWER(?)
+            OR LOWER(p.name) LIKE CONCAT('%', ?, '%')
+          )
+        LIMIT 1
+      `;
+
+      const slugified = slug; // e.g., '3-bedroom-apartment'
+      const likePattern = name; // '3 bedroom apartment' will be used in LIKE
+
+      return db.query(permissiveSql, [name, slugified, likePattern], (err2, res2) => {
+        if (err2) {
+          console.error('Permissive property search error:', err2);
+          return res.status(500).json({ message: 'Server error' });
+        }
+
+        if (!res2 || res2.length === 0) {
+          console.warn(`Property not found after permissive search: ${slug}`);
+          return res.status(404).json({ message: 'Shortlet not found' });
+        }
+
+        const property = res2[0];
+        property.images = property.images ? property.images.split(',') : [];
+        console.log('✅ Property retrieved (permissive):', property.name);
+        return res.json(property);
+      });
     }
 
     const property = results[0];
@@ -258,6 +291,43 @@ export const getPublicPropertyBySlug = (req, res) => {
     console.log("✅ Property retrieved:", property.name);
     res.json(property);
   });
+};
+
+/* CHECK AVAILABILITY FOR A PROPERTY */
+export const getPropertyAvailability = (req, res) => {
+  try {
+    const { id } = req.params;
+    const { check_in, check_out } = req.query;
+
+    if (!check_in || !check_out) return res.status(400).json({ message: 'check_in and check_out are required' });
+
+    // Ensure dates are valid
+    const ci = new Date(check_in);
+    const co = new Date(check_out);
+    if (isNaN(ci.getTime()) || isNaN(co.getTime()) || co <= ci) {
+      return res.status(400).json({ message: 'Invalid check_in/check_out dates' });
+    }
+
+    const sql = `
+      SELECT COUNT(*) AS cnt FROM bookings b
+      WHERE b.property_id = ?
+        AND b.payment_status = 'paid'
+        AND NOT (b.check_out <= ? OR b.check_in >= ?)
+    `;
+
+    db.execute(sql, [id, check_in, check_out])
+      .then(([rows]) => {
+        const cnt = rows && rows[0] ? Number(rows[0].cnt) : 0;
+        res.json({ available: cnt === 0, overlapping: cnt });
+      })
+      .catch((err) => {
+        console.error('Availability query error:', err);
+        res.status(500).json({ message: 'Failed to check availability' });
+      });
+  } catch (err) {
+    console.error('getPropertyAvailability error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
 };
 
 
