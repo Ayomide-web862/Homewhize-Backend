@@ -19,6 +19,7 @@ export const addProperty = async (req, res) => {
       address,
       location,
       price,
+      cautionFee,
       propertyType,
       bedrooms,
       bathrooms,
@@ -48,9 +49,9 @@ export const addProperty = async (req, res) => {
 
     const insertSql = `
       INSERT INTO properties
-      (name, address, location, price, property_type, bedrooms, bathrooms, max_guests,
+      (name, address, location, price, caution_fee, property_type, bedrooms, bathrooms, max_guests,
        status, description, latitude, longitude, admin_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const [result] = await db.execute(insertSql, [
@@ -58,6 +59,7 @@ export const addProperty = async (req, res) => {
       address,
       location,
       Number(price) || 0,
+      Number(cautionFee) || 0,
       propertyType,
       Number(bedrooms) || 0,
       Number(bathrooms) || 0,
@@ -130,17 +132,28 @@ export const getProperties = (req, res) => {
 };
 
 /* PUBLIC PROPERTIES */
-export const getPublicProperties = (req, res) => {
+export const getPublicProperties = async (req, res) => {
   try {
     const TTL_MS = parseInt(process.env.PUBLIC_PROPERTIES_TTL_MS || String(30 * 1000), 10); // default 30s
     const cacheKey = "public:properties";
 
-    const cachedPromise = cache.get ? cache.get(cacheKey) : Promise.resolve(null);
-    cachedPromise.then((cached) => {
-      if (cached) {
-        res.setHeader('Cache-Control', `public, max-age=${Math.ceil(TTL_MS/1000)}`);
-        return res.json(cached);
+    let cautionFeeField = "0 AS caution_fee";
+    try {
+      const [columnRows] = await db.execute(
+        `SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'properties' AND column_name = 'caution_fee' LIMIT 1`
+      );
+      if (columnRows && columnRows.length > 0) {
+        cautionFeeField = "p.caution_fee";
       }
+    } catch (colErr) {
+      console.warn('Unable to determine caution_fee column existence:', colErr);
+    }
+
+    const cached = cache.get ? await cache.get(cacheKey) : null;
+    if (cached) {
+      res.setHeader('Cache-Control', `public, max-age=${Math.ceil(TTL_MS/1000)}`);
+      return res.json(cached);
+    }
 
       const sql = `
         SELECT 
@@ -150,6 +163,7 @@ export const getPublicProperties = (req, res) => {
           p.address,
           p.location,
           p.price,
+          ${cautionFeeField},
           p.max_guests,
           p.bedrooms,
           p.bathrooms,
@@ -161,7 +175,7 @@ export const getPublicProperties = (req, res) => {
               AND b.payment_status = 'paid'
               AND CURDATE() >= b.check_in
               AND CURDATE() < b.check_out
-          ) AS is_booked
+          ) AS is_currently_occupied
         FROM properties p
         LEFT JOIN property_images pi ON p.id = pi.property_id
         WHERE LOWER(p.status) = 'available'
@@ -185,15 +199,6 @@ export const getPublicProperties = (req, res) => {
         res.setHeader('Cache-Control', `public, max-age=${Math.ceil(TTL_MS/1000)}`);
         res.json(formatted);
       });
-    }).catch((cacheErr) => {
-      console.warn('Cache lookup error for public properties', cacheErr);
-      // fallback to DB query
-      db.query(`SELECT p.*, GROUP_CONCAT(pi.image_url) AS images FROM properties p LEFT JOIN property_images pi ON p.id = pi.property_id WHERE LOWER(p.status) = 'available' GROUP BY p.id ORDER BY p.created_at DESC`, [], (err, results) => {
-        if (err) return res.status(500).json({ message: 'Server error' });
-        const formatted = (results || []).map((p) => ({ ...p, images: p.images ? p.images.split(',') : [] }));
-        res.json(formatted);
-      });
-    });
   } catch (error) {
     console.error('Get public properties error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -207,57 +212,94 @@ export const getPublicPropertyBySlug = async (req, res) => {
   const { slug } = req.params;
   const normalizedSlug = slugify(slug);
 
-  const buildDetailQuery = (whereClause) => `
-    SELECT 
-      p.id,
-      p.slug,
-      p.name,
-      p.address,
-      p.location,
-      p.price,
-      p.max_guests,
-      p.bedrooms,
-      p.bathrooms,
-      p.description,
-      p.latitude,
-      p.longitude,
-      (
-        SELECT GROUP_CONCAT(pi.image_url)
-        FROM property_images pi
-        WHERE pi.property_id = p.id
-      ) AS images,
-      EXISTS(
-        SELECT 1 FROM bookings b
-        WHERE b.property_id = p.id
-          AND b.payment_status = 'paid'
-          AND CURDATE() >= b.check_in
-          AND CURDATE() < b.check_out
-      ) AS is_booked
-    FROM properties p
-    WHERE LOWER(p.status) = 'available'
-      AND ${whereClause}
-    LIMIT 1
-  `;
+  const buildDetailQuery = async (whereClause) => {
+    let bookedDatesExpression = "NULL AS booked_dates";
+    let cautionFeeExpression = "0 AS caution_fee";
 
-  const getPropertyById = (id) => new Promise((resolve, reject) => {
-    const sql = buildDetailQuery('p.id = ?');
-    db.query(sql, [id], (err, results) => {
-      if (err) return reject(err);
-      const prop = results && results[0] ? results[0] : null;
-      if (prop) prop.images = prop.images ? prop.images.split(",") : [];
-      resolve(prop);
-    });
-  });
+    try {
+      const [tableRows] = await db.execute(
+        `SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'booked_dates' LIMIT 1`
+      );
 
-  const getPropertyBySlugColumn = (slugValue) => new Promise((resolve, reject) => {
-    const sql = buildDetailQuery('LOWER(p.slug) = LOWER(?)');
-    db.query(sql, [slugValue], (err, results) => {
-      if (err) return reject(err);
-      const prop = results && results[0] ? results[0] : null;
-      if (prop) prop.images = prop.images ? prop.images.split(",") : [];
-      resolve(prop);
+      if (tableRows && tableRows.length > 0) {
+        bookedDatesExpression = `(
+          SELECT GROUP_CONCAT(DISTINCT bd.booked_date)
+          FROM booked_dates bd
+          WHERE bd.property_id = p.id
+            AND bd.booked_date >= CURDATE()
+          ORDER BY bd.booked_date
+        ) AS booked_dates`;
+      }
+
+      const [columnRows] = await db.execute(
+        `SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'properties' AND column_name = 'caution_fee' LIMIT 1`
+      );
+
+      if (columnRows && columnRows.length > 0) {
+        cautionFeeExpression = 'p.caution_fee AS caution_fee';
+      }
+    } catch (tableCheckErr) {
+      console.warn('Unable to determine booked_dates/caution_fee availability:', tableCheckErr);
+    }
+
+    return `
+      SELECT
+        p.id,
+        p.slug,
+        p.name,
+        p.address,
+        p.location,
+        p.price,
+        ${cautionFeeExpression},
+        p.max_guests,
+        p.bedrooms,
+        p.bathrooms,
+        p.description,
+        p.latitude,
+        p.longitude,
+        (
+          SELECT GROUP_CONCAT(pi.image_url)
+          FROM property_images pi
+          WHERE pi.property_id = p.id
+        ) AS images,
+        EXISTS(
+          SELECT 1 FROM bookings b
+          WHERE b.property_id = p.id
+            AND b.payment_status = 'paid'
+            AND CURDATE() >= b.check_in
+            AND CURDATE() < b.check_out
+        ) AS is_currently_occupied,
+        ${bookedDatesExpression}
+      FROM properties p
+      WHERE LOWER(p.status) = 'available'
+        AND ${whereClause}
+      LIMIT 1
+    `;
+  };
+
+  const getPropertyById = async (id) => {
+    const sql = await buildDetailQuery('p.id = ?');
+    return new Promise((resolve, reject) => {
+      db.query(sql, [id], (err, results) => {
+        if (err) return reject(err);
+        const prop = results && results[0] ? results[0] : null;
+        if (prop) prop.images = prop.images ? prop.images.split(",") : [];
+        resolve(prop);
+      });
     });
-  });
+  };
+
+  const getPropertyBySlugColumn = async (slugValue) => {
+    const sql = await buildDetailQuery('LOWER(p.slug) = LOWER(?)');
+    return new Promise((resolve, reject) => {
+      db.query(sql, [slugValue], (err, results) => {
+        if (err) return reject(err);
+        const prop = results && results[0] ? results[0] : null;
+        if (prop) prop.images = prop.images ? prop.images.split(",") : [];
+        resolve(prop);
+      });
+    });
+  };
 
   // 1) Attempt to resolve using cached public properties (fast, consistent with list page)
   try {
@@ -275,7 +317,7 @@ export const getPublicPropertyBySlug = async (req, res) => {
       if (candidate && candidate.id) {
         const detail = await getPropertyById(candidate.id);
         if (detail) {
-          console.log('✅ Property retrieved (cache match):', detail.name);
+          console.log(' Property retrieved (cache match):', detail.name);
           return res.json(detail);
         }
       }
@@ -288,7 +330,7 @@ export const getPublicPropertyBySlug = async (req, res) => {
   try {
     const bySlug = await getPropertyBySlugColumn(normalizedSlug);
     if (bySlug) {
-      console.log('✅ Property retrieved (slug column):', bySlug.name);
+      console.log(' Property retrieved (slug column):', bySlug.name);
       return res.json(bySlug);
     }
   } catch (err) {
@@ -301,7 +343,7 @@ export const getPublicPropertyBySlug = async (req, res) => {
   // 3) Fallback to name-based matching (existing behavior)
   const name = slug.replace(/-/g, " ");
 
-  const sql = buildDetailQuery('LOWER(p.name) = LOWER(?)');
+  const sql = await buildDetailQuery('LOWER(p.name) = LOWER(?)');
   db.query(sql, [name], (err, results) => {
     if (err) {
       console.error("Error fetching property by slug:", err);
@@ -333,7 +375,7 @@ export const getPublicPropertyBySlug = async (req, res) => {
 
         const property = res2[0];
         property.images = property.images ? property.images.split(',') : [];
-        console.log('✅ Property retrieved (permissive):', property.name);
+        console.log(' Property retrieved (permissive):', property.name);
         return res.json(property);
       });
     }
@@ -341,7 +383,7 @@ export const getPublicPropertyBySlug = async (req, res) => {
     const property = results[0];
     property.images = property.images ? property.images.split(",") : [];
 
-    console.log("✅ Property retrieved:", property.name);
+    console.log(" Property retrieved:", property.name);
     res.json(property);
   });
 };
@@ -393,7 +435,7 @@ export const deleteProperty = (req, res) => {
   const adminId = req.user.id;
   const role = req.user.role;
 
-  // 1️⃣ Get images first
+  // 1️ Get images first
   const getImagesSql =
     "SELECT image_url FROM property_images WHERE property_id = ?";
 
@@ -401,7 +443,7 @@ export const deleteProperty = (req, res) => {
     if (err) return res.status(500).json({ message: "Failed to fetch images" });
 
     try {
-      // 2️⃣ Delete images from Cloudinary
+      //2️ Delete images from Cloudinary
       // Be robust when deriving Cloudinary public_id from the stored URL.
       // Cloudinary URLs are typically like: /upload/v12345/folder/subfolder/name.jpg
       // We strip the '/upload/' prefix, remove the version segment and extension.
@@ -429,7 +471,7 @@ export const deleteProperty = (req, res) => {
         }
       }
 
-      // 3️⃣ Delete property (CASCADE will handle images if set, else manual)
+      // 3️ Delete property (CASCADE will handle images if set, else manual)
       let deleteSql = "DELETE FROM properties WHERE id = ?";
       let params = [id];
 

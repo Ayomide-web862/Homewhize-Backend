@@ -33,7 +33,7 @@ function createTransporter() {
   const emailFrom = process.env.EMAIL_FROM || emailUser;
 
   if (!emailUser || !emailPass) {
-    console.error("❌ EMAIL_USER and EMAIL_PASS are required in .env");
+    console.error(" EMAIL_USER and EMAIL_PASS are required in .env");
     console.error("For Gmail: Use an App Password (not your regular password)");
     console.error("See: https://support.google.com/accounts/answer/185833");
     return null;
@@ -60,7 +60,7 @@ function createTransporter() {
       const enableDebug = process.env.EMAIL_DEBUG === 'true';
 
       if (!emailHost) {
-        console.error("❌ EMAIL_HOST is required for custom SMTP");
+        console.error(" EMAIL_HOST is required for custom SMTP");
         return null;
       }
 
@@ -83,10 +83,10 @@ function createTransporter() {
       });
     }
 
-    console.log(`✅ Email transporter configured: ${service}`);
+    console.log(` Email transporter configured: ${service}`);
     return transporter;
   } catch (err) {
-    console.error("❌ Failed to create email transporter:", err && err.message ? err.message : err);
+    console.error(" Failed to create email transporter:", err && err.message ? err.message : err);
     if (err && err.stack) console.error(err.stack);
     return null;
   }
@@ -106,7 +106,7 @@ export async function verifyEmailConnection() {
 
   try {
     await transporter.verify();
-    console.log("✅ Email transporter connection verified");
+    console.log(" Email transporter connection verified");
     return true;
   } catch (err) {
     // Provide richer diagnostic output for connection failures
@@ -129,7 +129,7 @@ export async function verifyEmailConnection() {
           if (!p || tried.has(p)) continue;
           tried.add(p);
           const secureTry = p === 465;
-          console.log(`🔁 Trying SMTP fallback ${hostEnv}:${p} secure=${secureTry}`);
+          console.log(` Trying SMTP fallback ${hostEnv}:${p} secure=${secureTry}`);
           try {
             const t = nodemailer.createTransport({
               host: hostEnv,
@@ -149,7 +149,7 @@ export async function verifyEmailConnection() {
             await t.verify();
             // success — replace global transporter and return true
             transporter = t;
-            console.log(`✅ Email transporter fallback succeeded: ${hostEnv}:${p} secure=${secureTry}`);
+            console.log(` Email transporter fallback succeeded: ${hostEnv}:${p} secure=${secureTry}`);
             return true;
           } catch (retryErr) {
             console.warn(`Fallback attempt to ${hostEnv}:${p} failed:`, retryErr && retryErr.message ? retryErr.message : retryErr);
@@ -189,7 +189,7 @@ export async function sendEmailSafely(mailOptions) {
   const transporter = getTransporter();
 
   if (!transporter) {
-    console.error("❌ Email transporter not available. Check .env configuration.");
+    console.error(" Email transporter not available. Check .env configuration.");
     return null;
   }
 
@@ -201,10 +201,10 @@ export async function sendEmailSafely(mailOptions) {
       });
     });
 
-    console.log(`✅ Email sent to ${mailOptions.to}: ${info.response}`);
+    console.log(` Email sent to ${mailOptions.to}: ${info.response}`);
     return info;
   } catch (err) {
-    console.error(`❌ Failed to send email to ${mailOptions.to}:`, err.message);
+    console.error(` Failed to send email to ${mailOptions.to}:`, err.message);
     // Return null instead of throwing so callers can handle gracefully
     return null;
   }

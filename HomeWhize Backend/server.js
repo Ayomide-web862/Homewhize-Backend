@@ -15,7 +15,7 @@ import communityRoutes from "./routes/communityRoutes.js";
 import passwordRouter from "./routes/passwordRouter.js";
 import kycRoutes from "./routes/kycRoutes.js";
 import bookingRoutes from "./routes/bookingRoutes.js";
-// chatRoutes removed
+import messageRoutes from "./routes/messageRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import { paystackWebhook } from "./controllers/paymentController.js";
 import providerRoutes from "./routes/providerRoutes.js";
@@ -94,6 +94,8 @@ const allowedOrigins = allowedOriginsEnv
   .split(",")
   .map((s) => s.trim());
 
+// app.options("/*", cors()); // Enable pre-flight for all routes - handled by cors middleware below
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -107,8 +109,14 @@ app.use(
       return callback(null, false); // DO NOT THROW ERROR
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    optionsSuccessStatus: 200, // some legacy browsers (IE11, various SmartTVs) choke on 204
   })
 );
+
+//message routes
+app.use("/api/messages", messageRoutes);
 
 
 if (!process.env.JWT_SECRET) {

@@ -60,13 +60,13 @@ export const sendSignupEmail = async (user, signupMethod = "manual") => {
 
     const info = await sendEmailSafely(mailOptions);
     if (info) {
-      console.log("✅ Signup email sent successfully to", email);
+      console.log(" Signup email sent successfully to", email);
     } else {
-      console.warn("⚠️ Signup email failed to send to", email, "but process continues");
+      console.warn(" Signup email failed to send to", email, "but process continues");
     }
     return info;
   } catch (error) {
-    console.error("❌ Error in sendSignupEmail:", error.message);
+    console.error(" Error in sendSignupEmail:", error.message);
     return null;
   }
 };
@@ -92,13 +92,13 @@ export const sendWelcomeEmail = async (name, email, tempPassword, role = "owner"
 
     const info = await sendEmailSafely(mailOptions);
     if (info) {
-      console.log("✅ Welcome email sent successfully to", email);
+      console.log(" Welcome email sent successfully to", email);
     } else {
-      console.warn("⚠️ Welcome email failed to send to", email, "but account creation continues");
+      console.warn(" Welcome email failed to send to", email, "but account creation continues");
     }
     return info;
   } catch (error) {
-    console.error("❌ Error in sendWelcomeEmail:", error.message);
+    console.error(" Error in sendWelcomeEmail:", error.message);
     return null;
   }
 };
@@ -122,13 +122,13 @@ export const sendPasswordChangeEmail = async (name, email) => {
 
     const info = await sendEmailSafely(mailOptions);
     if (info) {
-      console.log("✅ Password change email sent successfully to", email);
+      console.log(" Password change email sent successfully to", email);
     } else {
-      console.warn("⚠️ Password change email failed to send to", email, "but change is confirmed");
+      console.warn(" Password change email failed to send to", email, "but change is confirmed");
     }
     return info;
   } catch (error) {
-    console.error("❌ Error in sendPasswordChangeEmail:", error.message);
+    console.error(" Error in sendPasswordChangeEmail:", error.message);
     return null;
   }
 };
@@ -152,13 +152,44 @@ export const sendKYCReminderEmail = async (name, email) => {
 
     const info = await sendEmailSafely(mailOptions);
     if (info) {
-      console.log("✅ KYC reminder email sent successfully to", email);
+      console.log("KYC reminder email sent successfully to", email);
     } else {
-      console.warn("⚠️ KYC reminder email failed to send to", email);
+      console.warn("KYC reminder email failed to send to", email);
     }
     return info;
   } catch (error) {
-    console.error("❌ Error in sendKYCReminderEmail:", error.message);
+    console.error("Error in sendKYCReminderEmail:", error.message);
+    return null;
+  }
+};
+
+/**
+ * Send booking confirmation email
+ * @param {Object} booking - Booking object with all booking details
+ */
+export const sendBookingConfirmationEmail = async (booking) => {
+  try {
+    const { full_name, email, booking_reference, property_id, check_in, check_out, nights, guests, price_per_night, total_amount } = booking;
+
+    const subject = `Booking Confirmed - ${booking_reference}`;
+    const html = getBookingConfirmationTemplate(booking);
+
+    const mailOptions = {
+      from: getDefaultFrom(),
+      to: email,
+      subject: subject,
+      html: html,
+    };
+
+    const info = await sendEmailSafely(mailOptions);
+    if (info) {
+      console.log("Booking confirmation email sent successfully to", email);
+    } else {
+      console.warn("Booking confirmation email failed to send to", email);
+    }
+    return info;
+  } catch (error) {
+    console.error("Error in sendBookingConfirmationEmail:", error.message);
     return null;
   }
 };
@@ -740,7 +771,7 @@ function getWelcomeTemplate(name, email, tempPassword, role) {
           </div>
 
           <div class="steps-box">
-            <h3>📋 How to Change Your Password</h3>
+            <h3> How to Change Your Password</h3>
             <ol class="steps-list">
               <li>
                 <div class="step-number">1</div>
@@ -774,7 +805,7 @@ function getWelcomeTemplate(name, email, tempPassword, role) {
           </div>
 
           <div class="support-box">
-            <p><strong>💡 Key Steps:</strong></p>
+            <p><strong> Key Steps:</strong></p>
             <p>1. Change your password immediately upon first login</p>
             <p>2. Complete your KYC verification on the KYC page</p>
             <p>3. Start managing your properties and bookings</p>
@@ -939,7 +970,7 @@ function getPasswordChangeTemplate(name, email) {
           </div>
 
           <div class="security-tips">
-            <h3>🔒 Security Tips:</h3>
+            <h3> Security Tips:</h3>
             <ul>
               <li><strong>Never share your password</strong> with anyone, including HomeWhize staff</li>
               <li><strong>Use a strong password</strong> that includes uppercase, lowercase, numbers, and symbols</li>
@@ -950,7 +981,7 @@ function getPasswordChangeTemplate(name, email) {
           </div>
 
           <div class="info-box">
-            <strong style="color: #0F4D3C;">🔑 Quick Reminder:</strong><br>
+            <strong style="color: #0F4D3C;"> Quick Reminder:</strong><br>
             Keep your new password secure and don't share it with anyone. If you didn't make this change, please contact our support team immediately.
           </div>
 
@@ -1117,36 +1148,36 @@ function getKYCReminderTemplate(name, email) {
         </div>
         
         <div class="content">
-          <div class="greeting">Hi ${name}, 👋</div>
+          <div class="greeting">Hi ${name}, </div>
           
           <div class="message">
             We've noticed that your KYC (Know Your Customer) verification is still pending. Completing this verification is essential to unlock the full potential of your HomeWhize account!
           </div>
 
           <div class="kyc-benefits">
-            <h3>✨ What You'll Unlock After KYC:</h3>
+            <h3> What You'll Unlock After KYC:</h3>
             <div class="benefits-grid">
               <div class="benefit-item">
-                <strong>💰 Full Payments</strong>
+                <strong> Full Payments</strong>
                 Enable complete booking transactions
               </div>
               <div class="benefit-item">
-                <strong>📊 Analytics</strong>
+                <strong> Analytics</strong>
                 Access detailed booking reports
               </div>
               <div class="benefit-item">
-                <strong>🏆 Premium Badge</strong>
+                <strong> Premium Badge</strong>
                 Build trust with guests
               </div>
               <div class="benefit-item">
-                <strong>🎁 Exclusive Offers</strong>
+                <strong> Exclusive Offers</strong>
                 Get special promotions
               </div>
             </div>
           </div>
 
           <div class="requirement-box">
-            <h3>📋 Required Documents:</h3>
+            <h3> Required Documents:</h3>
             <ul class="docs-list">
               <li><strong>Valid ID Document:</strong> Passport, Driver's License, or National ID</li>
               <li><strong>Proof of Ownership/Occupancy:</strong> Utility bill or property lease</li>
@@ -1162,7 +1193,7 @@ function getKYCReminderTemplate(name, email) {
           </div>
 
           <div class="message" style="margin-top: 30px;">
-            <strong style="color: #0F4D3C;">⏰ Friendly Reminder:</strong><br>
+            <strong style="color: #0F4D3C;"> Friendly Reminder:</strong><br>
             The sooner you complete your KYC verification, the sooner you can start maximizing your earnings and opportunities on HomeWhize. It typically takes only 5-10 minutes!
           </div>
 
@@ -1181,6 +1212,92 @@ function getKYCReminderTemplate(name, email) {
         </div>
       </div>
     </body>
+    </html>
+  `;
+}
+
+function getBookingConfirmationTemplate(booking) {
+  const {
+    full_name,
+    email,
+    booking_reference,
+    check_in,
+    check_out,
+    nights,
+    guests,
+    price_per_night,
+    total_amount,
+  } = booking;
+
+  const checkInDate = new Date(check_in).toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  const checkOutDate = new Date(check_out).toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  return `
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Booking Confirmed - HomeWhize</title>
+        <style>
+          body { font-family: 'Poppins', Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 20px; }
+          .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .header { background: linear-gradient(135deg, #0F4D3C 0%, #1a6b55 100%); padding: 40px 20px; text-align: center; color: white; }
+          .content { padding: 40px 30px; line-height: 1.6; }
+          .booking-details { background: #F6EEE2; border-radius: 8px; padding: 20px; margin: 20px 0; border-left: 4px solid #0F4D3C; }
+          .detail-row { display: flex; justify-content: space-between; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #ddd; }
+          .detail-row:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+          .total-row { background: #0F4D3C; color: white; padding: 15px; border-radius: 6px; text-align: center; font-size: 18px; font-weight: bold; margin-top: 15px; }
+          .success-message { background: #DFF6EA; color: #0F4D3C; padding: 15px; border-radius: 6px; text-align: center; margin: 20px 0; border: 1px solid #0F4D3C; }
+          .footer { background: #f8f8f8; padding: 20px 30px; text-align: center; color: #666; font-size: 14px; }
+          .reference-highlight { background: #FFF1DB; color: #C27B3E; padding: 10px; border-radius: 4px; display: inline-block; font-weight: bold; font-size: 16px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Booking Confirmed!</h1>
+            <p>Your shortlet reservation has been successfully processed</p>
+          </div>
+          <div class="content">
+            <div class="success-message">
+              🎉 <strong>Congratulations ${full_name}!</strong><br />
+              Your booking has been confirmed and payment processed successfully.
+            </div>
+            <p>Dear ${full_name},</p>
+            <p>Thank you for choosing HomeWhize for your accommodation needs. Your booking has been confirmed.</p>
+            <div style="text-align:center; margin:20px 0;">
+              <span class="reference-highlight">Booking Reference: ${booking_reference}</span>
+            </div>
+            <div class="booking-details">
+              <h3 style="margin-top: 0; color: #0F4D3C;">📅 Booking Details</h3>
+              <div class="detail-row"><span><strong>Check-in:</strong></span><span>${checkInDate}</span></div>
+              <div class="detail-row"><span><strong>Check-out:</strong></span><span>${checkOutDate}</span></div>
+              <div class="detail-row"><span><strong>Duration:</strong></span><span>${nights} night${nights > 1 ? 's' : ''}</span></div>
+              <div class="detail-row"><span><strong>Guests:</strong></span><span>${guests} guest${guests > 1 ? 's' : ''}</span></div>
+              <div class="detail-row"><span><strong>Price per Night:</strong></span><span>₦${price_per_night.toLocaleString()}</span></div>
+              <div class="total-row">Total Amount Paid: ₦${total_amount.toLocaleString()}</div>
+            </div>
+            <p>We wish you a pleasant stay!</p>
+            <p>Best regards,<br /><strong>The HomeWhize Team</strong></p>
+          </div>
+          <div class="footer">
+            <p>&copy; 2026 HomeWhize. All rights reserved.</p>
+            <p>Booking Reference: <strong>${booking_reference}</strong></p>
+            <p>Account Email: <strong>${email}</strong></p>
+          </div>
+        </div>
+      </body>
     </html>
   `;
 }

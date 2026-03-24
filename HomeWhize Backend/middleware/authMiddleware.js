@@ -2,7 +2,7 @@ import jwt from "jsonwebtoken";
 import db from "../config/db.js";
 
 /* AUTH PROTECTION */
-const protect = (req, res, next) => {
+const protect = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -18,22 +18,23 @@ const protect = (req, res, next) => {
       audience: "homewhize-frontend",
     });
 
-    db.query(
+    // Use async/await with db.execute for consistency with rest of codebase
+    const [results] = await db.execute(
       "SELECT id, name, email, role FROM users WHERE id = ?",
-      [decoded.id],
-      (err, results) => {
-        if (err || results.length === 0) {
-          return res.status(401).json({ message: "User not found" });
-        }
-
-        req.user = results[0];
-        next();
-      }
+      [decoded.id]
     );
+
+    if (!results || results.length === 0) {
+      return res.status(401).json({ message: "User not found" });
+    }
+
+    req.user = results[0];
+    next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
       return res.status(401).json({ message: "Token expired, please login again" });
     }
+    console.error('[AUTH] Authentication error:', error.message);
     return res.status(401).json({ message: "Not authorized, token failed" });
   }
 };
