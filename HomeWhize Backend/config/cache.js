@@ -17,9 +17,9 @@ async function tryInitRedis() {
     redisClient.on('error', (e) => console.warn('Redis client error', e));
     await redisClient.connect();
     useRedis = true;
-    console.log('✅ Cache: connected to Redis');
+    console.log(' Cache: connected to Redis');
   } catch (err) {
-    console.warn('⚠️ Cache: Redis not available, falling back to in-memory cache', err && err.message ? err.message : err);
+    console.warn(' Cache: Redis not available, falling back to in-memory cache', err && err.message ? err.message : err);
     redisClient = null;
     useRedis = false;
   }

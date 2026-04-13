@@ -1,9 +1,15 @@
 import db from "../config/db.js";
 import crypto from "crypto";
 import { createTransaction, getTransactionByReference, updateTransactionStatus, listTransactions } from "../models/transactionModel.js";
-import { createBooking } from "../models/bookingModel.js";
+import { createBooking, updateBookingPaymentStatus } from "../models/bookingModel.js";
+import { updateServiceBookingPaymentStatus } from "../models/serviceBookingModel.js";
 import { createBookedDates, isDateRangeAvailable } from "../models/bookedDatesModel.js";
 import { sendBookingConfirmationEmail } from "../utils/emailService.js";
+import {
+  buildBookingSnapshotFromRequest,
+  buildPaystackMetadata,
+  finalizeShortletBooking,
+} from "../services/bookingPaymentService.js";
 
 // Initialize a Paystack transaction (server-side uses secret key)
 export const initializePayment = async (req, res) => {
@@ -85,7 +91,6 @@ export const initializeBookingPayment = async (req, res) => {
       check_in,
       check_out,
       guests,
-      price_per_night
     } = req.body;
 
     if (
@@ -94,8 +99,7 @@ export const initializeBookingPayment = async (req, res) => {
       !email ||
       !phone ||
       !check_in ||
-      !check_out ||
-      !price_per_night
+      !check_out
     ) {
       return res.status(400).json({ message: "Missing required booking fields" });
     }
@@ -107,22 +111,35 @@ export const initializeBookingPayment = async (req, res) => {
       return res.status(400).json({ message: "Check-out must be after check-in" });
     }
 
-    const nights = Math.ceil(
-      (checkOut - checkIn) / (1000 * 60 * 60 * 24)
-    );
-
-    // Check availability: ensure the date range is available
     const isAvailable = await isDateRangeAvailable(property_id, check_in, check_out);
     if (!isAvailable) {
       return res.status(409).json({ message: 'Selected dates are already booked' });
     }
 
-    const total_amount = nights * price_per_night;
-
     const booking_reference = `PADUP-${crypto
       .randomBytes(4)
       .toString("hex")
       .toUpperCase()}`;
+
+    let bookingSnapshot;
+    try {
+      bookingSnapshot = await buildBookingSnapshotFromRequest({
+        property_id,
+        user_id: req.user.id,
+        full_name,
+        email,
+        phone,
+        check_in,
+        check_out,
+        guests,
+        booking_reference,
+      });
+    } catch (snapshotError) {
+      if (snapshotError.message === "Property not found") {
+        return res.status(404).json({ message: "Property not found" });
+      }
+      return res.status(400).json({ message: snapshotError.message || "Invalid booking details" });
+    }
 
     const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
     if (!paystackSecret) {
@@ -135,25 +152,9 @@ export const initializeBookingPayment = async (req, res) => {
 
     const payload = {
       email,
-      amount: Math.round(Number(total_amount) * 100), // convert to kobo
+      amount: Math.round(Number(bookingSnapshot.total_amount) * 100),
       callback_url,
-      metadata: {
-        booking_reference,
-        booking_data: {
-          property_id,
-          user_id: req.user.id,
-          full_name,
-          email,
-          phone,
-          check_in,
-          check_out,
-          nights,
-          guests,
-          price_per_night,
-          total_amount,
-          booking_reference
-        }
-      },
+      metadata: buildPaystackMetadata(booking_reference),
     };
 
     const resp = await fetch("https://api.paystack.co/transaction/initialize", {
@@ -180,17 +181,18 @@ export const initializeBookingPayment = async (req, res) => {
       reference,
       booking_reference,
       booking_id: null,
-      amount: Number(total_amount),
+      amount: bookingSnapshot.total_amount,
       currency: "NGN",
       customer_email: email,
-      provider_id: null,
+      provider_id: bookingSnapshot.owner_user_id || null,
       paystack_payload: data.data,
+      booking_snapshot_json: bookingSnapshot,
     });
 
     return res.json({
       authorization_url: data.data.authorization_url,
       reference,
-      booking_reference
+      booking_reference,
     });
   } catch (error) {
     console.error("initializeBookingPayment error:", error);
@@ -226,30 +228,50 @@ export const verifyPayment = async (req, res) => {
 
     const tx = await getTransactionByReference(reference);
 
+    let bookingType = null;
+    let bookingReference = null;
+    let bookingCreated = false;
+    let bookingAlreadyExists = false;
+
     if (tx) {
+      bookingReference = tx.booking_reference;
       await updateTransactionStatus(reference, "success", data.data);
 
-      // If this is a booking payment and booking doesn't exist yet, create it
-      if (tx.paystack_payload && tx.paystack_payload.metadata && tx.paystack_payload.metadata.booking_data) {
-        const bookingData = tx.paystack_payload.metadata.booking_data;
+      const metadata = tx.paystack_payload && tx.paystack_payload.metadata ? tx.paystack_payload.metadata : null;
+      const isShortletBooking = tx.booking_snapshot_json || (metadata && metadata.booking_source === "shortlet");
+
+      if (isShortletBooking) {
+        try {
+          const result = await finalizeShortletBooking(tx, data.data);
+          bookingReference = result.booking_reference || bookingReference;
+          bookingCreated = result.created || false;
+          bookingAlreadyExists = result.already_exists || false;
+          bookingType = "shortlet";
+          if (result.created && result.bookingData) {
+            await sendBookingConfirmationEmail(result.bookingData);
+          }
+        } catch (finalizeError) {
+          console.error("Shortlet booking finalization failed:", finalizeError);
+        }
+      } else if (metadata && metadata.booking_data) {
+        const bookingData = metadata.booking_data;
         const bookingResult = await createBooking(bookingData);
         const bookingId = bookingResult[0].insertId;
-        
-        // Create booked dates for the property
+
         await createBookedDates(bookingData.property_id, bookingId, bookingData.check_in, bookingData.check_out);
-        
-        // Send confirmation email
+
         try {
           await sendBookingConfirmationEmail(bookingData);
         } catch (emailErr) {
           console.warn('Failed to send booking confirmation email:', emailErr);
         }
+      } else if (metadata && metadata.booking_type === 'service') {
+        bookingType = 'service';
+        await updateServiceBookingPaymentStatus(tx.booking_reference, 'paid');
       } else if (tx.booking_reference) {
-        // Existing booking update
         await updateBookingPaymentStatus(tx.booking_reference, "paid");
       }
 
-      // Invalidate public properties cache so availability reflects payment immediately
       try {
         if (global.__publicPropertiesCache) global.__publicPropertiesCache = {};
       } catch (e) {
@@ -260,6 +282,10 @@ export const verifyPayment = async (req, res) => {
     return res.json({
       verified: true,
       data: data.data,
+      booking_type: bookingType,
+      booking_reference: bookingReference,
+      booking_created: bookingCreated,
+      booking_already_exists: bookingAlreadyExists,
     });
   } catch (error) {
     console.error("verifyPayment error:", error);
@@ -312,30 +338,36 @@ export const paystackWebhook = async (req, res) => {
 
     if (event === 'charge.success' || (data && data.status === 'success')) {
       await updateTransactionStatus(reference, 'success', data);
-      // Try to find local transaction to get booking_reference or booking_data
       try {
         const tx = await getTransactionByReference(reference);
         if (tx) {
-          // If this is a booking payment and booking doesn't exist yet, create it
-          if (tx.paystack_payload && tx.paystack_payload.metadata && tx.paystack_payload.metadata.booking_data) {
-            const bookingData = tx.paystack_payload.metadata.booking_data;
+          const metadata = tx.paystack_payload && tx.paystack_payload.metadata ? tx.paystack_payload.metadata : null;
+          const isShortletBooking = tx.booking_snapshot_json || (metadata && metadata.booking_source === "shortlet");
+
+          if (isShortletBooking) {
+            try {
+              await finalizeShortletBooking(tx, data);
+            } catch (finalizeError) {
+              console.error('Shortlet booking finalization failed from webhook:', finalizeError);
+            }
+          } else if (metadata && metadata.booking_data) {
+            const bookingData = metadata.booking_data;
             const bookingResult = await createBooking(bookingData);
             const bookingId = bookingResult[0].insertId;
-            
-            // Create booked dates for the property
+
             await createBookedDates(bookingData.property_id, bookingId, bookingData.check_in, bookingData.check_out);
-            
-            // Send confirmation email
+
             try {
               await sendBookingConfirmationEmail(bookingData);
             } catch (emailErr) {
               console.warn('Failed to send booking confirmation email:', emailErr);
             }
+          } else if (metadata && metadata.booking_type === 'service') {
+            await updateServiceBookingPaymentStatus(tx.booking_reference, 'paid');
           } else if (tx.booking_reference) {
-            // Existing booking update
             await updateBookingPaymentStatus(tx.booking_reference, 'paid');
           }
-          // Invalidate public properties cache so availability reflects payment immediately
+
           try {
             if (global.__publicPropertiesCache) global.__publicPropertiesCache = {};
           } catch (e) {

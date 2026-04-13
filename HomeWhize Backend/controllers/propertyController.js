@@ -32,6 +32,8 @@ export const addProperty = async (req, res) => {
 
     const files = req.files || [];
     const adminId = req.user && req.user.id ? req.user.id : null;
+    const adminName = req.user && req.user.name ? req.user.name : null;
+    const adminEmail = req.user && req.user.email ? req.user.email : null;
 
     // Upload images if present
     let imageUrls = [];
@@ -50,8 +52,8 @@ export const addProperty = async (req, res) => {
     const insertSql = `
       INSERT INTO properties
       (name, address, location, price, caution_fee, property_type, bedrooms, bathrooms, max_guests,
-       status, description, latitude, longitude, admin_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       status, description, latitude, longitude, admin_id, admin_name, admin_email)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const [result] = await db.execute(insertSql, [
@@ -69,6 +71,8 @@ export const addProperty = async (req, res) => {
       latitude || null,
       longitude || null,
       adminId,
+      adminName,
+      adminEmail,
     ]);
 
     const propertyId = result.insertId;
@@ -105,9 +109,12 @@ export const getProperties = (req, res) => {
 
   let sql = `
     SELECT p.*,
-      GROUP_CONCAT(pi.image_url) AS images
+      GROUP_CONCAT(pi.image_url) AS images,
+      u.name AS admin_name,
+      u.email AS admin_email
     FROM properties p
     LEFT JOIN property_images pi ON p.id = pi.property_id
+    LEFT JOIN users u ON p.admin_id = u.id
   `;
 
   let params = [];
@@ -131,6 +138,58 @@ export const getProperties = (req, res) => {
   });
 };
 
+/* GET ALL PROPERTIES FOR SUPERADMIN WITH ADMIN DETAILS */
+export const getAllPropertiesForSuperAdmin = (req, res) => {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.max(5, Math.min(50, Number(req.query.limit) || 12));
+  const offset = (page - 1) * limit;
+
+  const countSql = `SELECT COUNT(*) AS total FROM properties`;
+  db.query(countSql, [], (countErr, countResults) => {
+    if (countErr) {
+      console.error('Count properties error:', countErr);
+      return res.status(500).json({ properties: [], total: 0, page, totalPages: 0 });
+    }
+
+    const total = countResults && countResults[0] ? countResults[0].total : 0;
+    const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
+
+    const sql = `
+      SELECT
+        p.*,
+        GROUP_CONCAT(pi.image_url) AS images,
+        u.name AS admin_name,
+        u.email AS admin_email
+      FROM properties p
+      LEFT JOIN property_images pi ON p.id = pi.property_id
+      LEFT JOIN users u ON p.admin_id = u.id
+      GROUP BY p.id
+      ORDER BY p.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    db.query(sql, [limit, offset], (err, results) => {
+      if (err) {
+        console.error('Get all properties for superadmin error:', err);
+        return res.status(500).json({ properties: [], total, page, totalPages });
+      }
+
+      const formatted = results.map(p => ({
+        ...p,
+        images: p.images ? p.images.split(",") : []
+      }));
+
+      res.json({
+        properties: formatted,
+        total,
+        limit,
+        page,
+        totalPages,
+      });
+    });
+  });
+};
+
 /* PUBLIC PROPERTIES */
 export const getPublicProperties = async (req, res) => {
   try {
@@ -138,15 +197,29 @@ export const getPublicProperties = async (req, res) => {
     const cacheKey = "public:properties";
 
     let cautionFeeField = "0 AS caution_fee";
+    let bookedDatesSubquery = "NULL AS booked_dates";
+
     try {
-      const [columnRows] = await db.execute(
+      const [cautionColumnRows] = await db.execute(
         `SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'properties' AND column_name = 'caution_fee' LIMIT 1`
       );
-      if (columnRows && columnRows.length > 0) {
+      if (cautionColumnRows && cautionColumnRows.length > 0) {
         cautionFeeField = "p.caution_fee";
       }
+
+      const [bookedDatesTable] = await db.execute(
+        `SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'booked_dates' LIMIT 1`
+      );
+      if (bookedDatesTable && bookedDatesTable.length > 0) {
+        bookedDatesSubquery = `(
+          SELECT GROUP_CONCAT(bd.booked_date ORDER BY bd.booked_date SEPARATOR ',')
+          FROM booked_dates bd
+          WHERE bd.property_id = p.id
+            AND bd.booked_date >= CURDATE()
+        ) AS booked_dates`;
+      }
     } catch (colErr) {
-      console.warn('Unable to determine caution_fee column existence:', colErr);
+      console.warn('Unable to determine caution_fee/booked_dates presence:', colErr);
     }
 
     const cached = cache.get ? await cache.get(cacheKey) : null;
@@ -168,17 +241,21 @@ export const getPublicProperties = async (req, res) => {
           p.bedrooms,
           p.bathrooms,
           p.description,
+          ${bookedDatesSubquery},
           GROUP_CONCAT(pi.image_url) AS images,
-          EXISTS(
-            SELECT 1 FROM bookings b
-            WHERE b.property_id = p.id
-              AND b.payment_status = 'paid'
-              AND CURDATE() >= b.check_in
-              AND CURDATE() < b.check_out
+          (
+            LOWER(p.status) = 'booked'
+            OR EXISTS(
+              SELECT 1 FROM bookings b
+              WHERE b.property_id = p.id
+                AND b.payment_status = 'paid'
+                AND CURDATE() >= b.check_in
+                AND CURDATE() < b.check_out
+            )
           ) AS is_currently_occupied
         FROM properties p
         LEFT JOIN property_images pi ON p.id = pi.property_id
-        WHERE LOWER(p.status) = 'available'
+        WHERE LOWER(p.status) IN ('available', 'booked')
         GROUP BY p.id
         ORDER BY p.created_at DESC
       `;
@@ -192,6 +269,7 @@ export const getPublicProperties = async (req, res) => {
         const formatted = (results || []).map((p) => ({
           ...p,
           images: p.images ? p.images.split(',') : [],
+          booked_dates: p.booked_dates ? p.booked_dates.split(',') : [],
         }));
 
         try { await cache.set(cacheKey, formatted, TTL_MS); } catch (e) { /* ignore */ }
@@ -271,7 +349,7 @@ export const getPublicPropertyBySlug = async (req, res) => {
         ) AS is_currently_occupied,
         ${bookedDatesExpression}
       FROM properties p
-      WHERE LOWER(p.status) = 'available'
+      WHERE LOWER(p.status) IN ('available', 'booked')
         AND ${whereClause}
       LIMIT 1
     `;
@@ -283,7 +361,10 @@ export const getPublicPropertyBySlug = async (req, res) => {
       db.query(sql, [id], (err, results) => {
         if (err) return reject(err);
         const prop = results && results[0] ? results[0] : null;
-        if (prop) prop.images = prop.images ? prop.images.split(",") : [];
+        if (prop) {
+          prop.images = prop.images ? prop.images.split(",") : [];
+          prop.booked_dates = prop.booked_dates ? prop.booked_dates.split(",") : [];
+        }
         resolve(prop);
       });
     });
@@ -295,7 +376,10 @@ export const getPublicPropertyBySlug = async (req, res) => {
       db.query(sql, [slugValue], (err, results) => {
         if (err) return reject(err);
         const prop = results && results[0] ? results[0] : null;
-        if (prop) prop.images = prop.images ? prop.images.split(",") : [];
+        if (prop) {
+          prop.images = prop.images ? prop.images.split(",") : [];
+          prop.booked_dates = prop.booked_dates ? prop.booked_dates.split(",") : [];
+        }
         resolve(prop);
       });
     });
@@ -389,36 +473,67 @@ export const getPublicPropertyBySlug = async (req, res) => {
 };
 
 /* CHECK AVAILABILITY FOR A PROPERTY */
-export const getPropertyAvailability = (req, res) => {
+export const getPropertyAvailability = async (req, res) => {
   try {
     const { id } = req.params;
     const { check_in, check_out } = req.query;
 
     if (!check_in || !check_out) return res.status(400).json({ message: 'check_in and check_out are required' });
 
-    // Ensure dates are valid
     const ci = new Date(check_in);
     const co = new Date(check_out);
     if (isNaN(ci.getTime()) || isNaN(co.getTime()) || co <= ci) {
       return res.status(400).json({ message: 'Invalid check_in/check_out dates' });
     }
 
-    const sql = `
-      SELECT COUNT(*) AS cnt FROM bookings b
-      WHERE b.property_id = ?
-        AND b.payment_status = 'paid'
-        AND NOT (b.check_out <= ? OR b.check_in >= ?)
-    `;
+    let bookedDates = [];
+    let overlapping = 0;
+    let available = true;
 
-    db.execute(sql, [id, check_in, check_out])
-      .then(([rows]) => {
-        const cnt = rows && rows[0] ? Number(rows[0].cnt) : 0;
-        res.json({ available: cnt === 0, overlapping: cnt });
-      })
-      .catch((err) => {
-        console.error('Availability query error:', err);
-        res.status(500).json({ message: 'Failed to check availability' });
-      });
+    try {
+      const [bdTable] = await db.execute(
+        `SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'booked_dates' LIMIT 1`
+      );
+
+      if (bdTable && bdTable.length > 0) {
+        const [rows] = await db.execute(
+          `SELECT booked_date FROM booked_dates WHERE property_id = ? AND booked_date >= ? AND booked_date < ? ORDER BY booked_date`,
+          [id, check_in, check_out]
+        );
+
+        bookedDates = rows.map((r) => r.booked_date);
+        overlapping = bookedDates.length;
+        available = overlapping === 0;
+      } else {
+        // Fallback to booking intervals if `booked_dates` table does not exist
+        const [rows] = await db.execute(
+          `SELECT b.check_in, b.check_out FROM bookings b WHERE b.property_id = ? AND b.payment_status = 'paid' AND NOT (b.check_out <= ? OR b.check_in >= ?)`,
+          [id, check_in, check_out]
+        );
+
+        overlapping = rows.length;
+        available = overlapping === 0;
+
+        if (rows.length > 0) {
+          // Expand overlapping bookings into day-level set for frontend
+          const blocked = new Set();
+          for (const r of rows) {
+            let d = new Date(r.check_in);
+            const end = new Date(r.check_out);
+            while (d < end) {
+              blocked.add(d.toISOString().slice(0, 10));
+              d.setDate(d.getDate() + 1);
+            }
+          }
+          bookedDates = Array.from(blocked).sort();
+        }
+      }
+    } catch (tableErr) {
+      console.warn('getPropertyAvailability failed to query booked_dates/bookings', tableErr);
+      return res.status(500).json({ message: 'Failed to check availability' });
+    }
+
+    res.json({ available, overlapping, booked_dates: bookedDates });
   } catch (err) {
     console.error('getPropertyAvailability error:', err);
     res.status(500).json({ message: 'Server error' });
@@ -429,69 +544,153 @@ export const getPropertyAvailability = (req, res) => {
 
 
 
+/* UPDATE PROPERTY */
+export const updateProperty = async (req, res) => {
+  const { id } = req.params;
+  const {
+    name,
+    address,
+    location,
+    price,
+    cautionFee,
+    propertyType,
+    bedrooms,
+    bathrooms,
+    maxGuests,
+    status,
+    description,
+    latitude,
+    longitude,
+  } = req.body;
+
+  const adminId = req.user && req.user.id ? req.user.id : null;
+  const adminName = req.user && req.user.name ? req.user.name : null;
+  const adminEmail = req.user && req.user.email ? req.user.email : null;
+  const role = req.user && req.user.role ? req.user.role : null;
+
+  try {
+    if (role === "admin") {
+      const [rows] = await db.execute("SELECT admin_id FROM properties WHERE id = ?", [id]);
+      if (!rows || rows.length === 0) return res.status(404).json({ message: "Property not found" });
+      if (rows[0].admin_id !== adminId) return res.status(403).json({ message: "Not authorized" });
+    }
+
+    const [result] = await db.execute(
+      `UPDATE properties SET
+        name = COALESCE(?, name),
+        address = COALESCE(?, address),
+        location = COALESCE(?, location),
+        price = COALESCE(?, price),
+        caution_fee = COALESCE(?, caution_fee),
+        property_type = COALESCE(?, property_type),
+        bedrooms = COALESCE(?, bedrooms),
+        bathrooms = COALESCE(?, bathrooms),
+        max_guests = COALESCE(?, max_guests),
+        status = COALESCE(?, status),
+        description = COALESCE(?, description),
+        latitude = COALESCE(?, latitude),
+        longitude = COALESCE(?, longitude),
+        admin_id = COALESCE(?, admin_id),
+        admin_name = COALESCE(?, admin_name),
+        admin_email = COALESCE(?, admin_email)
+      WHERE id = ?`,
+      [
+        name || null,
+        address || null,
+        location || null,
+        price ? Number(price) : null,
+        cautionFee ? Number(cautionFee) : null,
+        propertyType || null,
+        bedrooms ? Number(bedrooms) : null,
+        bathrooms ? Number(bathrooms) : null,
+        maxGuests ? Number(maxGuests) : null,
+        status || null,
+        description || null,
+        latitude || null,
+        longitude || null,
+        role === "admin" ? adminId : null,
+        role === "admin" ? adminName : null,
+        role === "admin" ? adminEmail : null,
+        id,
+      ]
+    );
+
+    if (result.affectedRows === 0) return res.status(404).json({ message: "Property not found" });
+
+    try { await cache.del('public:properties'); } catch (e) { /* ignore */ }
+
+    res.json({ message: "Property updated successfully", id });
+  } catch (error) {
+    console.error('Update property error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 /* DELETE PROPERTY */
-export const deleteProperty = (req, res) => {
+export const deleteProperty = async (req, res) => {
   const { id } = req.params;
   const adminId = req.user.id;
   const role = req.user.role;
 
-  // 1️ Get images first
-  const getImagesSql =
-    "SELECT image_url FROM property_images WHERE property_id = ?";
+  try {
+    const [images] = await db.execute(
+      "SELECT image_url FROM property_images WHERE property_id = ?",
+      [id]
+    );
 
-  db.query(getImagesSql, [id], async (err, images) => {
-    if (err) return res.status(500).json({ message: "Failed to fetch images" });
+    for (const img of images || []) {
+      try {
+        const url = img.image_url || "";
+        const uploadIdx = url.indexOf("/upload/");
+        let publicId;
+
+        if (uploadIdx !== -1) {
+          publicId = url.substring(uploadIdx + "/upload/".length);
+          publicId = publicId.replace(/^v\d+\//, "");
+          publicId = publicId.replace(/\.[^/.]+$/, "");
+        } else {
+          publicId = img.image_url.split("/").slice(-2).join("/").split(".")[0];
+        }
+
+        await cloudinary.uploader.destroy(publicId);
+      } catch (destroyErr) {
+        console.warn("Cloudinary destroy failed for", img.image_url, destroyErr);
+      }
+    }
+
+    // Remove any bookings that reference this property before deleting the property itself.
+    // This prevents foreign-key failures from bookings.property_id.
+    try {
+      await db.execute("DELETE FROM bookings WHERE property_id = ?", [id]);
+    } catch (bookingDeleteErr) {
+      console.warn("Could not delete related bookings before property delete:", bookingDeleteErr);
+      throw bookingDeleteErr;
+    }
+
+    let deleteSql = "DELETE FROM properties WHERE id = ?";
+    const params = [id];
+    if (role === "admin") {
+      deleteSql += " AND admin_id = ?";
+      params.push(adminId);
+    }
+
+    const [result] = await db.execute(deleteSql, params);
+    if (result.affectedRows === 0) {
+      return res.status(role === "admin" ? 403 : 404).json({ message: "Property not found or not allowed" });
+    }
 
     try {
-      //2️ Delete images from Cloudinary
-      // Be robust when deriving Cloudinary public_id from the stored URL.
-      // Cloudinary URLs are typically like: /upload/v12345/folder/subfolder/name.jpg
-      // We strip the '/upload/' prefix, remove the version segment and extension.
-      for (const img of images) {
-        try {
-          const url = img.image_url || "";
-          const uploadIdx = url.indexOf("/upload/");
-          let publicId;
-
-          if (uploadIdx !== -1) {
-            publicId = url.substring(uploadIdx + "/upload/".length);
-            // remove version prefix like v123456/ if present
-            publicId = publicId.replace(/^v\d+\//, "");
-            // remove file extension
-            publicId = publicId.replace(/\.[^/.]+$/, "");
-          } else {
-            // fallback to previous heuristic
-            publicId = img.image_url.split("/").slice(-2).join("/").split(".")[0];
-          }
-
-          await cloudinary.uploader.destroy(publicId);
-        } catch (destroyErr) {
-          console.warn("Cloudinary destroy failed for", img.image_url, destroyErr);
-          // continue deleting other images even if one fails
-        }
-      }
-
-      // 3️ Delete property (CASCADE will handle images if set, else manual)
-      let deleteSql = "DELETE FROM properties WHERE id = ?";
-      let params = [id];
-
-      if (role === "admin") {
-        deleteSql += " AND admin_id = ?";
-        params.push(adminId);
-      }
-
-      db.query(deleteSql, params, (delErr, result) => {
-        if (delErr)
-          return res.status(500).json({ message: "Delete failed" });
-
-        if (result.affectedRows === 0)
-          return res.status(403).json({ message: "Not allowed" });
-
-        res.json({ message: "Property deleted successfully" });
-      });
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ message: "Cloudinary delete failed" });
+      await cache.del('public:properties');
+    } catch (cacheErr) {
+      console.warn('Could not clear public property cache after delete:', cacheErr);
     }
-  });
+
+    return res.json({ message: "Property deleted successfully" });
+  } catch (error) {
+    console.error('Delete property error:', error);
+    return res.status(500).json({
+      message: "Delete failed",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
 };

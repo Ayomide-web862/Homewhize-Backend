@@ -88,9 +88,11 @@ export const getMessages = async (conversationId, limit = 50, offset = 0) => {
     throw new Error('Invalid conversation ID');
   }
 
-  if (limit > 100) limit = 100; // Max 100 messages per request
-  if (offset < 0) offset = 0;
+  limit = Math.max(1, Math.min(parseInt(limit, 10) || 50, 100)); // Ensure valid integer, max 100
+  offset = Math.max(0, parseInt(offset, 10) || 0); // Ensure valid integer, min 0
+  conversationId = parseInt(conversationId, 10); // Ensure integer
 
+  // Note: LIMIT and OFFSET must be concatenated for mysql2 prepared statements
   const [rows] = await db.execute(
     `SELECT
        m.id,
@@ -110,8 +112,8 @@ export const getMessages = async (conversationId, limit = 50, offset = 0) => {
      LEFT JOIN providers p ON m.sender_role = 'provider' AND m.sender_id = p.id
      WHERE m.conversation_id = ?
      ORDER BY m.created_at ASC
-     LIMIT ? OFFSET ?`,
-    [conversationId, limit, offset]
+     LIMIT ${limit} OFFSET ${offset}`,
+    [conversationId]
   );
 
   return rows || [];

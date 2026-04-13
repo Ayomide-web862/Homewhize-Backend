@@ -3,6 +3,8 @@ import cloudinary from "../config/cloudinary.js";
 import crypto from "crypto";
 import http from "http";
 import https from "https";
+import { createSubaccountForUser } from "./paystackSubaccountController.js";
+import { getSubaccountByUserId } from "../models/subaccountModel.js";
 
 // Upload helper with better error handling
 const uploadToCloudinary = async (file) => {
@@ -32,6 +34,7 @@ export const submitKYC = async (req, res) => {
   try {
     // Validate required fields
     const { fullName, email, phone, address, bankName, accountNumber } = req.body;
+    const bankCode = req.body.bankCode || ""; // Make bankCode optional
     
     if (!fullName || !email || !phone || !address || !bankName || !accountNumber) {
       return res.status(400).json({ 
@@ -66,8 +69,8 @@ export const submitKYC = async (req, res) => {
     // Insert into database
     const [result] = await db.execute(
       `INSERT INTO kyc_requests 
-      (user_id, full_name, email, phone, address, bank_name, account_number, id_document_url, ownership_document_url, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      (user_id, full_name, email, phone, address, bank_name, bank_code, account_number, id_document_url, ownership_document_url, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         req.user.id,
         fullName,
@@ -75,6 +78,7 @@ export const submitKYC = async (req, res) => {
         phone,
         address,
         bankName,
+        bankCode,
         accountNumber,
         idDocUrl,
         ownershipDocUrl,
@@ -156,12 +160,43 @@ export const updateKYCStatus = async (req, res) => {
 
     // Check if KYC exists
     const [existing] = await db.execute(
-      "SELECT id, status FROM kyc_requests WHERE id=?",
+      "SELECT id, user_id, full_name, email, bank_name, bank_code, account_number, status FROM kyc_requests WHERE id=?",
       [id]
     );
 
     if (!existing || existing.length === 0) {
       return res.status(404).json({ message: "KYC request not found" });
+    }
+
+    // If approved, ensure subaccount creation once per user
+    if (status === "Approved") {
+      try {
+        const userId = existing[0].user_id;
+        const existingSub = await getSubaccountByUserId(userId);
+
+        if (!existingSub) {
+          const business_name = existing[0].full_name || "Untitled Business";
+          const bank_code = existing[0].bank_code || null;
+          const account_number = existing[0].account_number || null;
+
+          if (!bank_code || !account_number) {
+            throw new Error("Bank code and account number are required for subaccount onboarding");
+          }
+
+          await createSubaccountForUser({
+            user_id: userId,
+            business_name,
+            bank_code,
+            account_number,
+            bank_name: existing[0].bank_name,
+            email: existing[0].email,
+            full_name: existing[0].full_name,
+          });
+        }
+      } catch (subErr) {
+        console.error("Subaccount creation error for user after KYC approval:", subErr);
+        return res.status(500).json({ message: "Failed to onboard subaccount for approved KYC", error: subErr.message });
+      }
     }
 
     // Update status

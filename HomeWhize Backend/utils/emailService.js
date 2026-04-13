@@ -1227,6 +1227,7 @@ function getBookingConfirmationTemplate(booking) {
     guests,
     price_per_night,
     total_amount,
+    caution_fee = 0,
   } = booking;
 
   const checkInDate = new Date(check_in).toLocaleDateString('en-US', {
@@ -1241,6 +1242,8 @@ function getBookingConfirmationTemplate(booking) {
     month: 'long',
     day: 'numeric',
   });
+
+  const roomTotal = nights * price_per_night;
 
   return `
     <!DOCTYPE html>
@@ -1286,6 +1289,8 @@ function getBookingConfirmationTemplate(booking) {
               <div class="detail-row"><span><strong>Duration:</strong></span><span>${nights} night${nights > 1 ? 's' : ''}</span></div>
               <div class="detail-row"><span><strong>Guests:</strong></span><span>${guests} guest${guests > 1 ? 's' : ''}</span></div>
               <div class="detail-row"><span><strong>Price per Night:</strong></span><span>₦${price_per_night.toLocaleString()}</span></div>
+              <div class="detail-row"><span><strong>Room Total:</strong></span><span>₦${roomTotal.toLocaleString()}</span></div>
+              ${caution_fee > 0 ? `<div class="detail-row"><span><strong>Caution Fee:</strong></span><span>₦${caution_fee.toLocaleString()}</span></div>` : ''}
               <div class="total-row">Total Amount Paid: ₦${total_amount.toLocaleString()}</div>
             </div>
             <p>We wish you a pleasant stay!</p>

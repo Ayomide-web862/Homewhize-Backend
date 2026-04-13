@@ -1,5 +1,17 @@
 import db from "../config/db.js";
 import cloudinary from "../config/cloudinary.js";
+import cache from "../config/cache.js";
+
+const COMMUNITY_POSTS_CACHE_KEY = 'community:posts';
+const COMMUNITY_POSTS_TTL_MS = parseInt(process.env.COMMUNITY_POSTS_TTL_MS || '15000', 10);
+
+const clearCommunityPostsCache = async () => {
+  try {
+    await cache.del(COMMUNITY_POSTS_CACHE_KEY);
+  } catch (err) {
+    console.warn('Failed to clear community posts cache:', err && err.message ? err.message : err);
+  }
+};
 
 /* ===================== CREATE POST ===================== */
 export const createPost = async (req, res) => {
@@ -38,12 +50,22 @@ export const createPost = async (req, res) => {
       }
     }
 
+    await clearCommunityPostsCache();
     res.json({ message: "Post created" });
   });
 };
 
 /* ===================== GET POSTS ===================== */
-export const getPosts = (req, res) => {
+export const getPosts = async (req, res) => {
+  try {
+    const cached = await cache.get(COMMUNITY_POSTS_CACHE_KEY);
+    if (cached) {
+      return res.json(cached);
+    }
+  } catch (cacheErr) {
+    console.warn('Community posts cache lookup failed:', cacheErr && cacheErr.message ? cacheErr.message : cacheErr);
+  }
+
   const sql = `
     SELECT p.*,
     COUNT(l.id) AS likes
@@ -53,7 +75,7 @@ export const getPosts = (req, res) => {
     ORDER BY p.created_at DESC
   `;
 
-  db.query(sql, (err, posts) => {
+  db.query(sql, async (err, posts) => {
     if (err) {
       console.error(err);
       return res.status(500).json([]);
@@ -71,7 +93,7 @@ export const getPosts = (req, res) => {
     db.query(
       `SELECT * FROM community_post_images WHERE post_id IN (${placeholders})`,
       postIds,
-      (err2, imgs) => {
+      async (err2, imgs) => {
         if (err2) {
           console.error(err2);
           return res.status(500).json([]);
@@ -86,6 +108,12 @@ export const getPosts = (req, res) => {
           p.liked = false;
           p.likes = Number(p.likes) || 0;
         });
+
+        try {
+          await cache.set(COMMUNITY_POSTS_CACHE_KEY, posts, COMMUNITY_POSTS_TTL_MS);
+        } catch (cacheErr) {
+          console.warn('Failed to cache community posts:', cacheErr && cacheErr.message ? cacheErr.message : cacheErr);
+        }
 
         res.json(posts);
       }
@@ -144,11 +172,12 @@ export const toggleLike = (req, res) => {
         db.query(
           "DELETE FROM community_likes WHERE post_id=? AND user_id=?",
           [postId, id],
-          (delErr) => {
+          async (delErr) => {
             if (delErr) {
               console.error(delErr);
               return res.status(500).json({ message: "Failed to unlike" });
             }
+            await clearCommunityPostsCache();
             res.json({ liked: false });
           }
         );
@@ -156,11 +185,12 @@ export const toggleLike = (req, res) => {
         db.query(
           "INSERT INTO community_likes (post_id, user_id) VALUES (?, ?)",
           [postId, id],
-          (insErr) => {
+          async (insErr) => {
             if (insErr) {
               console.error(insErr);
               return res.status(500).json({ message: "Failed to like" });
             }
+            await clearCommunityPostsCache();
             res.json({ liked: true });
           }
         );

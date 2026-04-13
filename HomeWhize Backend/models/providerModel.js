@@ -1,6 +1,28 @@
 import db from "../config/db.js";
 import cache from "../config/cache.js";
 
+const PROVIDERS_ALL_KEY = 'providers:all';
+const providerSlugKey = (slug) => `provider:slug:${slug}`;
+const providerCategoryKey = (category) => `providers:category:${category}`;
+
+export const invalidateProviderCaches = async ({ slug, categories = '' } = {}) => {
+  try {
+    await cache.del(PROVIDERS_ALL_KEY);
+    if (slug) {
+      await cache.del(providerSlugKey(slug));
+    }
+    if (categories) {
+      const catList = String(categories)
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      await Promise.all(catList.map((category) => cache.del(providerCategoryKey(category))));
+    }
+  } catch (err) {
+    console.warn('Provider cache invalidation failed:', err && err.message ? err.message : err);
+  }
+};
+
 // Helper: generate slug from company name
 export function generateSlug(name) {
   return name
@@ -30,7 +52,9 @@ export const createProvider = async ({ company_name, email, phone, address, desc
   const sql = `INSERT INTO providers (company_name, slug, email, phone, address, description, categories, user_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
   const [result] = await db.execute(sql, [company_name, slug, email, phone, address, description, normalized, user_id]);
-  return { id: result.insertId, company_name, slug, email, phone, address, description, categories: normalized, user_id };
+  const provider = { id: result.insertId, company_name, slug, email, phone, address, description, categories: normalized, user_id };
+  await invalidateProviderCaches({ slug, categories: normalized }).catch(() => {});
+  return provider;
 };
 
 // Fetch provider by slug

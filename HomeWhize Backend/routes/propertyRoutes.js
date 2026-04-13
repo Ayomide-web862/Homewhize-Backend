@@ -5,7 +5,9 @@ import {
   deleteProperty,
   getPublicPropertyBySlug,
   addProperty,
+  updateProperty,
   getProperties,
+  getAllPropertiesForSuperAdmin,
   getPublicProperties,
   getPropertyAvailability
 } from "../controllers/propertyController.js";
@@ -29,6 +31,20 @@ router.get(
   getProperties
 );
 
+router.get(
+  "/superadmin/all",
+  protect,
+  roleMiddleware("superadmin"),
+  getAllPropertiesForSuperAdmin
+);
+
+router.put(
+  "/:id",
+  protect,
+  roleMiddleware("admin", "superadmin", "master"),
+  updateProperty
+);
+
 router.delete(
   "/:id",
   protect,
@@ -36,7 +52,7 @@ router.delete(
   deleteProperty
 );
 
-// ✅ Specific route MUST come before generic /public route
+//  Specific route MUST come before generic /public route
 router.get("/public/slug/:slug", getPublicPropertyBySlug);
 
 router.get("/public", getPublicProperties);

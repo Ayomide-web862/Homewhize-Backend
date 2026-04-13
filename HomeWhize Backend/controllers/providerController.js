@@ -1,4 +1,4 @@
-import { createProvider, getProviderById, getProviders, getProviderBySlug } from "../models/providerModel.js";
+import { createProvider, getProviderById, getProviders, getProviderBySlug, invalidateProviderCaches } from "../models/providerModel.js";
 import db from "../config/db.js";
 
 // Create service for a provider
@@ -52,6 +52,7 @@ export const createServiceForProvider = async (req, res, next) => {
       updated_at: s.updated_at,
     };
 
+    await invalidateProviderCaches({ slug: provider.slug, categories: provider.categories }).catch(() => {});
     res.status(201).json({ service: mapped });
   } catch (err) {
     next(err);
@@ -173,6 +174,7 @@ export const deleteProviderHandler = async (req, res, next) => {
     }
 
     await connP.commit();
+    await invalidateProviderCaches({ slug: provider.slug, categories: provider.categories }).catch(() => {});
     connection.release();
     res.json({ message: 'Provider and linked user deleted' });
   } catch (err) {

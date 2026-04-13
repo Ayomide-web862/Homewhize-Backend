@@ -17,13 +17,19 @@ import kycRoutes from "./routes/kycRoutes.js";
 import bookingRoutes from "./routes/bookingRoutes.js";
 import messageRoutes from "./routes/messageRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import serviceBookingRoutes from "./routes/serviceBookingRoutes.js";
 import { paystackWebhook } from "./controllers/paymentController.js";
 import providerRoutes from "./routes/providerRoutes.js";
 import db from "./config/db.js";
+import cache from "./config/cache.js";
 import { verifyEmailConnection } from "./config/emailConfig.js";
 import fs from 'fs/promises';
 
-dotenv.config();
+dotenv.config({ quiet: true });
+
+await cache.init().catch((err) => {
+  console.warn('Cache initialization failed, continuing with fallback cache:', err && err.message ? err.message : err);
+});
 
 // Ensure `fetch` exists in older Node versions by polyfilling with node-fetch if necessary.
 // Node 18+ provides global fetch; on older runtimes, prefer installing `node-fetch`.
@@ -297,14 +303,19 @@ console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
 
     for (const f of sqlFiles) {
       if (applied.has(f)) {
-        console.log('Skipping already-applied migration:', f);
+        // Suppress noisy "already applied" logs unless in debug mode
+        if (process.env.DEBUG_MIGRATIONS === 'true') {
+          console.log('Skipping already-applied migration:', f);
+        }
         continue;
       }
 
       try {
         const content = await fs.readFile(path.join(migrationsDir, f), 'utf8');
         if (content && content.trim()) {
-          console.log('Applying migration:', f);
+          if (process.env.DEBUG_MIGRATIONS === 'true') {
+            console.log('Applying migration:', f);
+          }
           const parts = content
             .split(';')
             .map(p => p.trim())
@@ -318,7 +329,9 @@ console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
               // If statement has benign 'already exists' error, ignore; otherwise mark as fatal
               const msg = (stmtErr && stmtErr.message) ? stmtErr.message.toLowerCase() : '';
               if (msg.includes('already exists') || msg.includes('duplicate') || msg.includes('errno 1050') ) {
-                console.log(`Non-fatal migration message for ${f}:`, stmtErr.message || stmtErr);
+                if (process.env.DEBUG_MIGRATIONS === 'true') {
+                  console.log(`Non-fatal migration message for ${f}:`, stmtErr.message || stmtErr);
+                }
                 continue;
               }
               console.warn(`Fatal error running statement in ${f}:`, stmtErr.message || stmtErr);
@@ -330,7 +343,9 @@ console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
           if (!hadFatal) {
             try {
               await db.execute('INSERT INTO migrations (filename) VALUES (?)', [f]);
-              console.log('Recorded migration:', f);
+              if (process.env.DEBUG_MIGRATIONS === 'true') {
+                console.log('Recorded migration:', f);
+              }
             } catch (recErr) {
               console.warn('Could not record migration', f, recErr.message || recErr);
             }
@@ -379,8 +394,7 @@ app.post(
   paystackWebhook
 );
 app.use("/api/providers", providerRoutes);
-// Providers API removed per request
-// serviceBookingRoutes removed
+app.use("/api/service-bookings", serviceBookingRoutes);
 
 
 
