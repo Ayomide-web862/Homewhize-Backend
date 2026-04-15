@@ -1,7 +1,7 @@
 -- Migration: add slug column to providers and backfill values
 
 ALTER TABLE providers
-  ADD COLUMN IF NOT EXISTS slug VARCHAR(255) DEFAULT NULL;
+  ADD COLUMN slug VARCHAR(255) DEFAULT NULL;
 
 -- Backfill slug using company_name and id to ensure uniqueness
 UPDATE providers

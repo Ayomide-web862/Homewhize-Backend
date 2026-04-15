@@ -24,7 +24,10 @@ const pool = mysql.createPool(poolConfig);
 
 pool.getConnection((err, connection) => {
   if (err) {
-    console.error("MySQL connection error:", err);
+    console.error("DB initialization failure - MySQL connection error:", err.message);
+    console.error("DB initialization failure - Full error:", err);
+    if (err.code) console.error("DB initialization failure - Error code:", err.code);
+    if (err.errno) console.error("DB initialization failure - Error number:", err.errno);
   } else {
     console.log("MySQL pool connected");
     connection.release();

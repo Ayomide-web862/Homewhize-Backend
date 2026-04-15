@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import helmet from "helmet";
 import compression from "compression";
 import rateLimit from "express-rate-limit";
+import { Server } from "socket.io";
 
 import authRoutes from "./routes/authRoutes.js";
 import googleRoutes from "./routes/googleRoutes.js";
@@ -25,23 +26,50 @@ import cache from "./config/cache.js";
 import { verifyEmailConnection } from "./config/emailConfig.js";
 import fs from 'fs/promises';
 
-dotenv.config({ quiet: true });
-
-await cache.init().catch((err) => {
-  console.warn('Cache initialization failed, continuing with fallback cache:', err && err.message ? err.message : err);
+// DEBUG: global error handlers
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err.message);
+  console.error(err.stack);
+  process.exit(1);
 });
 
-// Ensure `fetch` exists in older Node versions by polyfilling with node-fetch if necessary.
-// Node 18+ provides global fetch; on older runtimes, prefer installing `node-fetch`.
-if (typeof fetch === "undefined") {
-  try {
-    const { default: fetchPoly } = await import('node-fetch');
-    global.fetch = fetchPoly;
-    console.log('Polyfilled global.fetch using node-fetch');
-  } catch (err) {
-    console.warn('Global fetch not available and node-fetch not installed. Please use Node 18+ or install node-fetch.');
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('UNHANDLED REJECTION at:', promise, 'reason:', reason);
+  if (reason && reason.stack) {
+    console.error(reason.stack);
   }
+  process.exit(1);
+});
+
+dotenv.config({ quiet: true });
+
+// DEBUG: startup diagnostics
+console.log('=== HOMEWHIZE BACKEND STARTUP ===');
+console.log('NODE_ENV:', process.env.NODE_ENV || 'not set');
+console.log('PORT:', process.env.PORT || 'not set');
+console.log('DB_HOST present:', !!process.env.DB_HOST);
+console.log('DB_NAME present:', !!process.env.DB_NAME);
+console.log('DB_USER present:', !!process.env.DB_USER);
+console.log('JWT_SECRET present:', !!process.env.JWT_SECRET);
+console.log('PAYSTACK_SECRET_KEY present:', !!process.env.PAYSTACK_SECRET_KEY);
+console.log('EMAIL_USER present:', !!process.env.EMAIL_USER);
+console.log('EMAIL_PASS present:', !!process.env.EMAIL_PASS);
+console.log('FRONTEND_URLS:', process.env.FRONTEND_URLS || 'not set');
+console.log('=== STARTUP DIAGNOSTICS COMPLETE ===');
+
+// Log current environment setup
+console.log(`[Startup] NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
+if (process.env.NODE_ENV === 'production') {
+  console.log('[Startup] Running in PRODUCTION mode');
+} else {
+  console.log('[Startup] Running in DEVELOPMENT mode');
 }
+
+// DEBUG: cache initialization
+console.log('Cache initialization will be handled in bootstrap...');
+
+// DEBUG: fetch polyfill - Node 20+ has global fetch, no polyfill needed
+console.log('Global fetch available in Node 20+ - no polyfill needed.');
 
 // Log Paystack secret presence (masked) and whether it's test or live to aid debugging
 try {
@@ -100,26 +128,73 @@ const allowedOrigins = allowedOriginsEnv
   .split(",")
   .map((s) => s.trim());
 
-// app.options("/*", cors()); // Enable pre-flight for all routes - handled by cors middleware below
+// Log CORS configuration on startup
+console.log("[CORS] Allowed origins:", allowedOrigins);
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true); // allow server-to-server / browser direct hits
+// EXPLICIT CORS headers middleware - ensures headers are set even behind proxies
+// This runs BEFORE express-cors to ensure compatibility with cPanel proxy setups
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const isAllowed = !origin || allowedOrigins.includes(origin);
+  
+  if (isAllowed) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length,X-JSON-Response');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    
+    if (process.env.DEBUG_CORS === 'true') {
+      console.log(`[CORS] Allowed request from origin: ${origin || 'no-origin'}`);
+    }
+  } else if (origin && process.env.DEBUG_CORS === 'true') {
+    console.warn(`[CORS] Origin not in allowlist: ${origin}`);
+  }
+  
+  // Handle preflight OPTIONS request
+  if (req.method === 'OPTIONS') {
+    if (isAllowed) {
+      res.sendStatus(200);
+    } else {
+      res.status(403).json({ error: 'CORS not allowed for this origin' });
+    }
+    return;
+  }
+  
+  next();
+});
 
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+// CORS configuration - applied globally before any routes
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests without origin (server-to-server, direct hits)
+    if (!origin) return callback(null, true);
 
-      console.warn("Blocked by CORS:", origin);
-      return callback(null, false); // DO NOT THROW ERROR
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    optionsSuccessStatus: 200, // some legacy browsers (IE11, various SmartTVs) choke on 204
-  })
-);
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // In development, be more permissive
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn("[CORS] Warning: Request from unallowed origin:", origin);
+      return callback(null, true);
+    }
+
+    console.warn("[CORS] Blocked request from origin:", origin);
+    return callback(new Error('Not allowed by CORS'), false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  exposedHeaders: ['Content-Length', 'X-JSON-Response'],
+  optionsSuccessStatus: 200, // for legacy browser compatibility
+  maxAge: 86400, // 24 hours cache for preflight
+};
+
+// Enable CORS globally (handles preflight automatically)
+app.use(cors(corsOptions));
 
 //message routes
 app.use("/api/messages", messageRoutes);
@@ -149,11 +224,17 @@ app.use(
         connectSrc: [
           "'self'",
           "https://api.homewhize.com",
-          "https://www.googleapis.com"
+          "https://homewhize.com",
+          "https://www.homewhize.com",
+          "https://www.googleapis.com",
+          "https://api.paystack.co",
+          "https://cloudinary.com",
+          "https://res.cloudinary.com"
         ],
         imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        frameSrc: ["'self'", "https://accounts.google.com"],
+        frameSrc: ["'self'", "https://accounts.google.com", "https://www.youtube.com"],
+        mediaSrc: ["'self'", "https://res.cloudinary.com"],
       },
     },
     referrerPolicy: { policy: "no-referrer" },
@@ -185,6 +266,19 @@ app.use(compression());
 
 // NOTE: Frontend serving via backend removed to allow explicit frontend dev/static hosting.
 
+// DEBUG: optional request logging middleware
+if (process.env.DEBUG_REQUESTS === 'true') {
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const duration = Date.now() - start;
+      console.log(`[REQUEST] ${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`);
+    });
+    next();
+  });
+  console.log('Request logging enabled (DEBUG_REQUESTS=true)');
+}
+
 
 app.get("/", (req, res) => {
   res.json({
@@ -192,6 +286,23 @@ app.get("/", (req, res) => {
     env: process.env.NODE_ENV || "development",
     timestamp: new Date().toISOString(),
     allowedOrigins: allowedOrigins,
+  });
+});
+
+// DEBUG: lightweight health route
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    env: process.env.NODE_ENV || null,
+    hasJwtSecret: !!process.env.JWT_SECRET,
+    hasPaystackSecret: !!process.env.PAYSTACK_SECRET_KEY,
+    hasEmailUser: !!process.env.EMAIL_USER,
+    hasEmailPass: !!process.env.EMAIL_PASS,
+    hasDbHost: !!process.env.DB_HOST,
+    hasDbName: !!process.env.DB_NAME,
+    hasDbUser: !!process.env.DB_USER,
+    frontendUrls: process.env.FRONTEND_URLS || null,
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -227,14 +338,147 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// CORS diagnostic endpoint - helps debug CORS issues
+app.get('/api/cors-check', (req, res) => {
+  const origin = req.headers.origin || 'NO_ORIGIN_HEADER';
+  const isAllowed = !req.headers.origin || allowedOrigins.includes(req.headers.origin);
+  
+  res.json({
+    status: 'ok',
+    cors: {
+      requestOrigin: origin,
+      allowedOrigins: allowedOrigins,
+      isOriginAllowed: isAllowed,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': res.getHeader('Access-Control-Allow-Origin'),
+        'Access-Control-Allow-Credentials': res.getHeader('Access-Control-Allow-Credentials'),
+        'Access-Control-Allow-Methods': res.getHeader('Access-Control-Allow-Methods'),
+      }
+    },
+    environment: {
+      NODE_ENV: process.env.NODE_ENV || 'not set',
+      TRUST_PROXY: process.env.TRUST_PROXY || '1',
+    }
+  });
+});
+
 console.log("   Backend initialized");
 console.log("   Allowed CORS origins:", allowedOrigins);
 console.log("   NODE_ENV:", process.env.NODE_ENV || "development");
 console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
 
-// Ensure KYC table exists on startup to avoid runtime ER_NO_SUCH_TABLE errors
-(async () => {
+// DEBUG: KYC table initialization
+console.log('KYC table initialization will be handled in bootstrap...');
+
+// DEBUG: migrations initialization
+console.log('Migrations initialization will be handled in bootstrap...');
+
+// DEBUG: email verification
+console.log('Email verification will be handled in bootstrap...');
+
+app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api/auth", authLimiter, googleRoutes);
+app.use("/api/properties", propertyRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/community", communityRoutes);
+app.use("/api/auth/password", authLimiter, passwordRouter);
+app.use("/api/kyc", kycRoutes);
+app.use("/api/bookings", bookingRoutes);
+// conversations/chat routes removed
+// Mount payments routes
+app.use("/api/payments", paymentRoutes);
+
+// Dedicated webhook endpoint: use raw body parser so we can verify Paystack HMAC signature
+app.post(
+  "/api/payments/webhook",
+  express.raw({ type: "application/json" }),
+  paystackWebhook
+);
+app.use("/api/providers", providerRoutes);
+app.use("/api/service-bookings", serviceBookingRoutes);
+
+
+
+// Global Error Handler - Production Safe
+app.use((err, req, res, next) => {
+  const isDevelopment = process.env.NODE_ENV === "development";
+  
+  // Log error for debugging (server-side only)
+  if (isDevelopment) {
+    console.error("Server Error:", err);
+  } else {
+    // In production, log errors but don't expose to client
+    console.error("[ERROR]", new Date().toISOString(), err);
+  }
+
+  // Don't expose internal details in production
+  const message = isDevelopment 
+    ? err.message 
+    : "Something went wrong on the server. Please try again later.";
+
+  res.status(500).json({ 
+    message: message,
+    // Only expose error code in production, not details
+    ...(isDevelopment && { error: err.stack })
+  });
+});
+
+const PORT = process.env.PORT || 5000;
+
+// DEBUG: app listen
+console.log(`Attempting to start server on port ${PORT}...`);
+// For Phusion Passenger / cPanel deployments we should not always call app.listen()
+// Passenger will `require()` this file and expect the app to be exported. To support
+// both local and Passenger startup, only call `app.listen` when not running under
+// Passenger. Set env `PASSENGER_APP=true` on your cPanel app to disable manual listen.
+const server = app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// Graceful shutdown
+const shutdown = async (signal) => {
+  console.log(`Received ${signal}. Shutting down gracefully...`);
   try {
+    if (server) {
+      server.close(() => console.log('HTTP server closed'));
+    }
+    // Close DB pool
+    try {
+      await db.closePool();
+      console.log('MySQL pool closed');
+    } catch (dberr) {
+      console.warn('Error closing DB pool:', dberr && dberr.message ? dberr.message : dberr);
+    }
+    // Allow some time for pending requests/logs
+    setTimeout(() => process.exit(0), 500);
+  } catch (err) {
+    console.error('Error during shutdown:', err);
+    process.exit(1);
+  }
+};
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// Socket.io: initialization will be handled in bootstrap
+
+// Export the Express app for environments (like Phusion Passenger) that require it.
+export default app;
+
+// Initialization functions
+async function initCache() {
+  try {
+    console.log('Starting cache initialization...');
+    await cache.init();
+    console.log('Cache initialization complete.');
+  } catch (err) {
+    console.warn('Cache initialization failed, continuing with fallback cache:', err && err.message ? err.message : err);
+  }
+}
+
+async function ensureKycTable() {
+  try {
+    console.log('Starting KYC table initialization...');
     const createKycTable = `
       CREATE TABLE IF NOT EXISTS kyc_requests (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -276,14 +520,15 @@ console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
         console.warn("Could not ensure 'updated_at' column:", alterErr.message || alterErr);
       }
     }
+    console.log('KYC table initialization complete.');
   } catch (err) {
     console.error("Failed to ensure kyc_requests table:", err);
   }
-})();
+}
 
-// Run SQL migrations in migrations/ directory with a simple tracking table
-(async () => {
+async function runMigrations() {
   try {
+    console.log('Starting migrations initialization...');
     // Ensure migrations table exists
     await db.execute(`
       CREATE TABLE IF NOT EXISTS migrations (
@@ -357,113 +602,29 @@ console.log("   FORCE_HTTPS:", process.env.FORCE_HTTPS || "false");
         console.warn('Could not apply migration', f, mfErr.message || mfErr);
       }
     }
+    console.log('Migrations initialization complete.');
   } catch (err) {
     console.warn('Migration runner error:', err.message || err);
   }
-})();
+}
 
-// Verify email configuration on startup
-(async () => {
+async function verifyEmailStartup() {
   try {
+    console.log('Starting email verification...');
     const emailOk = await verifyEmailConnection();
     if (!emailOk) {
       console.warn("⚠️ Email service not fully configured. Emails may fail to send.");
       console.warn("   See EMAIL_SETUP_GUIDE.md for configuration help.");
     }
+    console.log('Email verification complete.');
   } catch (err) {
     console.warn("⚠️ Could not verify email connection:", err.message);
   }
-})();
-
-app.use("/api/auth", authLimiter, authRoutes);
-app.use("/api/auth", authLimiter, googleRoutes);
-app.use("/api/properties", propertyRoutes);
-app.use("/api/admin", adminRoutes);
-app.use("/api/community", communityRoutes);
-app.use("/api/auth/password", authLimiter, passwordRouter);
-app.use("/api/kyc", kycRoutes);
-app.use("/api/bookings", bookingRoutes);
-// conversations/chat routes removed
-// Mount payments routes
-app.use("/api/payments", paymentRoutes);
-
-// Dedicated webhook endpoint: use raw body parser so we can verify Paystack HMAC signature
-app.post(
-  "/api/payments/webhook",
-  express.raw({ type: "application/json" }),
-  paystackWebhook
-);
-app.use("/api/providers", providerRoutes);
-app.use("/api/service-bookings", serviceBookingRoutes);
-
-
-
-// Global Error Handler - Production Safe
-app.use((err, req, res, next) => {
-  const isDevelopment = process.env.NODE_ENV === "development";
-  
-  // Log error for debugging (server-side only)
-  if (isDevelopment) {
-    console.error("Server Error:", err);
-  } else {
-    // In production, log errors but don't expose to client
-    console.error("[ERROR]", new Date().toISOString(), err);
-  }
-
-  // Don't expose internal details in production
-  const message = isDevelopment 
-    ? err.message 
-    : "Something went wrong on the server. Please try again later.";
-
-  res.status(500).json({ 
-    message: message,
-    // Only expose error code in production, not details
-    ...(isDevelopment && { error: err.stack })
-  });
-});
-
-const PORT = process.env.PORT || 5000;
-
-// For Phusion Passenger / cPanel deployments we should not always call app.listen()
-// Passenger will `require()` this file and expect the app to be exported. To support
-// both local and Passenger startup, only call `app.listen` when not running under
-// Passenger. Set env `PASSENGER_APP=true` on your cPanel app to disable manual listen.
-let server = null;
-if (process.env.PASSENGER_APP === "true" || process.env.PASSENGER === "true") {
-  console.log("Passenger mode detected - exporting app for Passenger / cPanel startup");
-} else {
-  server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 }
 
-// Graceful shutdown
-const shutdown = async (signal) => {
-  console.log(`Received ${signal}. Shutting down gracefully...`);
+async function initSocket(server) {
   try {
-    if (server) {
-      server.close(() => console.log('HTTP server closed'));
-    }
-    // Close DB pool
-    try {
-      await db.closePool();
-      console.log('MySQL pool closed');
-    } catch (dberr) {
-      console.warn('Error closing DB pool:', dberr && dberr.message ? dberr.message : dberr);
-    }
-    // Allow some time for pending requests/logs
-    setTimeout(() => process.exit(0), 500);
-  } catch (err) {
-    console.error('Error during shutdown:', err);
-    process.exit(1);
-  }
-};
-
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-
-// Socket.io: initialize if server available
-try {
-  if (server) {
-    const { Server } = await import('socket.io');
+    console.log('Initializing Socket.io...');
     const io = new Server(server, {
       cors: {
         origin: allowedOrigins,
@@ -500,10 +661,26 @@ try {
         console.log('Socket disconnected', socket.id);
       });
     });
+    console.log('Socket.io initialized successfully.');
+  } catch (err) {
+    console.warn('Socket.io initialization failed:', err && err.message ? err.message : err);
   }
-} catch (err) {
-  console.warn('Socket.io not initialized:', err && err.message ? err.message : err);
 }
 
-// Export the Express app for environments (like Phusion Passenger) that require it.
-export default app;
+// Bootstrap function to run all async initializations
+async function bootstrap() {
+  try {
+    await initCache();
+    await ensureKycTable();
+    await runMigrations();
+    await verifyEmailStartup();
+    if (server) {
+      await initSocket(server);
+    }
+  } catch (err) {
+    console.error('Bootstrap error:', err);
+  }
+}
+
+// Run bootstrap after module load
+bootstrap();

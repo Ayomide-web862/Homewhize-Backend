@@ -101,6 +101,7 @@ export async function verifyEmailConnection() {
   }
 
   if (!transporter) {
+    console.error("Email initialization failure - No transporter available (creation failed)");
     return false;
   }
 
@@ -109,10 +110,10 @@ export async function verifyEmailConnection() {
     console.log(" Email transporter connection verified");
     return true;
   } catch (err) {
-    // Provide richer diagnostic output for connection failures
-    const host = transporter && transporter.options && transporter.options.host ? transporter.options.host : process.env.EMAIL_HOST;
-    const port = transporter && transporter.options && transporter.options.port ? transporter.options.port : process.env.EMAIL_PORT;
-    console.warn(`⚠️ Email transporter verification failed to ${host}:${port} —`, err && err.message ? err.message : err);
+    console.error("Email initialization failure - Transporter verification failed:", err.message);
+    console.error("Email initialization failure - Full error:", err);
+    if (err.code) console.error("Email initialization failure - Error code:", err.code);
+    if (err.response) console.error("Email initialization failure - SMTP response:", err.response);
     if (err && err.code) console.warn('Error code:', err.code);
     if (err && err.response) console.warn('SMTP response:', err.response);
     if (err && err.stack) console.debug(err.stack);
