@@ -10,7 +10,8 @@ import {
   downloadDocument,
   debugGetKYC,
   getSignedDocumentUrl,
-  getSignedDocumentDebug
+  getSignedDocumentDebug,
+  getBanksList
 } from "../controllers/kycController.js";
 
 const router = express.Router();
@@ -18,7 +19,7 @@ const router = express.Router();
 router.post(
   "/submit",
   protect,
-  roleMiddleware("admin"),
+  roleMiddleware("admin", "cleaner"),
   upload.fields([
     { name: "idDocument", maxCount: 1 },
     { name: "ownershipDocument", maxCount: 1 }
@@ -30,7 +31,10 @@ router.get("/my-status", protect, getMyKYCStatus);
 router.get("/all", protect, roleMiddleware("superadmin"), getAllKYC);
 router.put("/:id/status", protect, roleMiddleware("superadmin"), updateKYCStatus);
 
-// Debug endpoint - check stored URLs (superadmin only)
+// Bank list endpoint for frontend dropdown
+router.get("/banks", protect, getBanksList);
+
+// Debug endpoints
 router.get("/debug/:id", protect, roleMiddleware("superadmin"), debugGetKYC);
 
 // Download document proxy (anyone authenticated can download their own or assigned documents)

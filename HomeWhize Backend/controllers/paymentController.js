@@ -154,7 +154,7 @@ export const initializeBookingPayment = async (req, res) => {
       email,
       amount: Math.round(Number(bookingSnapshot.total_amount) * 100),
       callback_url,
-      metadata: buildPaystackMetadata(booking_reference),
+      metadata: buildPaystackMetadata(booking_reference, bookingSnapshot),
     };
 
     const resp = await fetch("https://api.paystack.co/transaction/initialize", {
@@ -303,6 +303,17 @@ export const paymentCallback = async (req, res) => {
       return res.redirect(frontendUrl + "/payments/verify");
     }
 
+    // Fetch transaction to get metadata for proper redirection
+    const tx = await getTransactionByReference(reference);
+    if (tx && tx.paystack_payload && tx.paystack_payload.metadata) {
+      const metadata = tx.paystack_payload.metadata;
+      if (metadata.booking_source === "shortlet" && metadata.property_slug) {
+        // Redirect to specific shortlet page with success params
+        return res.redirect(`${frontendUrl}/shortlets/${metadata.property_slug}?booking_success=1&booking_reference=${encodeURIComponent(metadata.booking_reference)}`);
+      }
+    }
+
+    // Fallback to verify page
     return res.redirect(`${frontendUrl}/payments/verify?reference=${encodeURIComponent(reference)}`);
   } catch (err) {
     console.error('paymentCallback error:', err);

@@ -360,7 +360,7 @@ export const getProviderDashboardStats = async (req, res) => {
     const providerId = providerRows[0].id;
 
     // Get service bookings for this provider
-    const bookings = await fetchProviderServiceBookings({ providerId });
+    const bookings = await fetchProviderServiceBookings(providerId);
 
     // Compute stats
     const total = bookings.length;

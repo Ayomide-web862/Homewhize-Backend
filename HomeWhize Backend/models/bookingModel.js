@@ -2,9 +2,9 @@ import db from "../config/db.js";
 
 export const createBooking = (booking) => {
   const sql = `
-    INSERT INTO bookings 
-    (property_id, user_id, owner_user_id, full_name, email, phone, check_in, check_out, nights, guests, price_per_night, total_amount, booking_reference, caution_fee, platform_fee_amount, owner_earnings_amount, owner_payout_amount, payment_breakdown_json, caution_fee_status, owner_payout_status, stay_outcome, caution_fee_refund_reference, owner_transfer_reference)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO bookings
+    (property_id, user_id, owner_user_id, full_name, email, phone, check_in, check_out, nights, guests, price_per_night, total_amount, booking_reference, caution_fee, platform_fee_amount, owner_earnings_amount, owner_payout_amount, payment_breakdown_json, caution_fee_status, owner_payout_status, stay_outcome, caution_fee_refund_reference, owner_transfer_reference, access_code)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   return db.execute(sql, [
@@ -30,7 +30,8 @@ export const createBooking = (booking) => {
     booking.owner_payout_status || 'pending',
     booking.stay_outcome || 'pending',
     booking.caution_fee_refund_reference || null,
-    booking.owner_transfer_reference || null
+    booking.owner_transfer_reference || null,
+    booking.access_code || null
   ]);
 };
 

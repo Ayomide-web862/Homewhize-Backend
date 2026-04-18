@@ -153,6 +153,50 @@ export const settleBooking = async (req, res) => {
   }
 };
 
+/* CANCEL BOOKING - ADMIN ONLY */
+export const cancelBooking = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking id is required" });
+    }
+
+    const booking = await getBookingById(bookingId);
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    if (booking.payment_status !== "paid") {
+      return res.status(400).json({ message: "Only paid bookings can be cancelled" });
+    }
+
+    if (booking.stay_outcome === "cancelled") {
+      return res.status(200).json({ message: "Booking already cancelled", booking_id: bookingId });
+    }
+
+    // Update booking status to cancelled
+    await updateBookingSettlement(booking.id, {
+      payment_status: "cancelled",
+      stay_outcome: "cancelled",
+      cancelled_at: new Date(),
+      cancelled_by: req.user.id,
+      caution_fee_status: "refunded", // Mark caution fee for refund
+    });
+
+    // TODO: Implement actual refund logic here if needed
+    // For now, just mark as cancelled - refund can be handled manually
+
+    res.json({
+      message: "Booking cancelled successfully",
+      booking_id: booking.id,
+      booking_reference: booking.booking_reference,
+    });
+  } catch (error) {
+    console.error("Booking cancellation error:", error);
+    res.status(500).json({ message: error.message || "Failed to cancel booking" });
+  }
+};
+
 /* GET ALL BOOKINGS FOR ADMIN - WITH STATS */
 export const getAllBookings = async (req, res) => {
   try {

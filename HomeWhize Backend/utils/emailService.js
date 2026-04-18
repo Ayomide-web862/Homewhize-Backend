@@ -169,10 +169,32 @@ export const sendKYCReminderEmail = async (name, email) => {
  */
 export const sendBookingConfirmationEmail = async (booking) => {
   try {
-    const { full_name, email, booking_reference, property_id, check_in, check_out, nights, guests, price_per_night, total_amount } = booking;
+    const { full_name, email, booking_reference, property_id, check_in, check_out, nights, guests, price_per_night, total_amount, access_code } = booking;
+
+    // Send guest confirmation email
+    await sendGuestBookingConfirmationEmail(booking);
+
+    // Send owner notification email
+    await sendOwnerBookingNotificationEmail(booking);
+
+    console.log("Booking confirmation emails sent successfully to guest and owner");
+    return true;
+  } catch (error) {
+    console.error("Error in sendBookingConfirmationEmail:", error.message);
+    return null;
+  }
+};
+
+/**
+ * Send guest booking confirmation email
+ * @param {Object} booking - Booking object
+ */
+export const sendGuestBookingConfirmationEmail = async (booking) => {
+  try {
+    const { full_name, email, booking_reference, check_in, check_out, nights, guests, price_per_night, total_amount, access_code } = booking;
 
     const subject = `Booking Confirmed - ${booking_reference}`;
-    const html = getBookingConfirmationTemplate(booking);
+    const html = getGuestBookingConfirmationTemplate(booking);
 
     const mailOptions = {
       from: getDefaultFrom(),
@@ -183,13 +205,49 @@ export const sendBookingConfirmationEmail = async (booking) => {
 
     const info = await sendEmailSafely(mailOptions);
     if (info) {
-      console.log("Booking confirmation email sent successfully to", email);
+      console.log("Guest booking confirmation email sent successfully to", email);
     } else {
-      console.warn("Booking confirmation email failed to send to", email);
+      console.warn("Guest booking confirmation email failed to send to", email);
     }
     return info;
   } catch (error) {
-    console.error("Error in sendBookingConfirmationEmail:", error.message);
+    console.error("Error in sendGuestBookingConfirmationEmail:", error.message);
+    return null;
+  }
+};
+
+/**
+ * Send owner booking notification email
+ * @param {Object} booking - Booking object
+ */
+export const sendOwnerBookingNotificationEmail = async (booking) => {
+  try {
+    // Get property details for owner info
+    const api = (await import("../api/axios")).default;
+    const { data: property } = await api.get(`/properties/${booking.property_id}`);
+
+    const ownerEmail = property.admin_email;
+    const ownerName = property.admin_name || "Property Owner";
+
+    const subject = `New Booking - ${booking.booking_reference}`;
+    const html = getOwnerBookingNotificationTemplate(booking, property);
+
+    const mailOptions = {
+      from: getDefaultFrom(),
+      to: ownerEmail,
+      subject: subject,
+      html: html,
+    };
+
+    const info = await sendEmailSafely(mailOptions);
+    if (info) {
+      console.log("Owner booking notification email sent successfully to", ownerEmail);
+    } else {
+      console.warn("Owner booking notification email failed to send to", ownerEmail);
+    }
+    return info;
+  } catch (error) {
+    console.error("Error in sendOwnerBookingNotificationEmail:", error.message);
     return null;
   }
 };
@@ -1189,7 +1247,7 @@ function getKYCReminderTemplate(name, email) {
           </div>
 
           <div style="text-align: center;">
-            <a href="https://homewhize.com/kyc" class="cta-button">Complete KYC Now</a>
+            <a href="https://homewhize.com/login" class="cta-button">Complete KYC Now</a>
           </div>
 
           <div class="message" style="margin-top: 30px;">
@@ -1300,6 +1358,212 @@ function getBookingConfirmationTemplate(booking) {
             <p>&copy; 2026 HomeWhize. All rights reserved.</p>
             <p>Booking Reference: <strong>${booking_reference}</strong></p>
             <p>Account Email: <strong>${email}</strong></p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+}
+
+function getGuestBookingConfirmationTemplate(booking) {
+  const {
+    full_name,
+    email,
+    booking_reference,
+    check_in,
+    check_out,
+    nights,
+    guests,
+    price_per_night,
+    total_amount,
+    caution_fee = 0,
+    access_code
+  } = booking;
+
+  const checkInDate = new Date(check_in).toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  const checkOutDate = new Date(check_out).toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  const roomTotal = nights * price_per_night;
+
+  return `
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Booking Confirmed - HomeWhize</title>
+        <style>
+          body { font-family: 'Poppins', Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 20px; }
+          .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .header { background: linear-gradient(135deg, #0F4D3C 0%, #1a6b55 100%); padding: 40px 20px; text-align: center; color: white; }
+          .content { padding: 40px 30px; line-height: 1.6; }
+          .booking-details { background: #F6EEE2; border-radius: 8px; padding: 20px; margin: 20px 0; border-left: 4px solid #0F4D3C; }
+          .detail-row { display: flex; justify-content: space-between; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #ddd; }
+          .detail-row:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+          .total-row { background: #0F4D3C; color: white; padding: 15px; border-radius: 6px; text-align: center; font-size: 18px; font-weight: bold; margin-top: 15px; }
+          .success-message { background: #DFF6EA; color: #0F4D3C; padding: 15px; border-radius: 6px; text-align: center; margin: 20px 0; border: 1px solid #0F4D3C; }
+          .access-code { background: #FFF1DB; color: #C27B3E; padding: 15px; border-radius: 6px; text-align: center; margin: 20px 0; border: 1px solid #C27B3E; }
+          .footer { background: #f8f8f8; padding: 20px 30px; text-align: center; color: #666; font-size: 14px; }
+          .reference-highlight { background: #FFF1DB; color: #C27B3E; padding: 10px; border-radius: 4px; display: inline-block; font-weight: bold; font-size: 16px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Booking Confirmed!</h1>
+            <p>Your shortlet reservation has been successfully processed</p>
+          </div>
+          <div class="content">
+            <div class="success-message">
+              🎉 <strong>Congratulations ${full_name}!</strong><br />
+              Your booking has been confirmed and payment processed successfully.
+            </div>
+
+            <div style="text-align:center; margin:20px 0;">
+              <span class="reference-highlight">Booking Reference: ${booking_reference}</span>
+            </div>
+
+            <div class="booking-details">
+              <h3 style="margin-top: 0; color: #0F4D3C;">📅 Booking Details</h3>
+              <div class="detail-row"><span><strong>Check-in:</strong></span><span>${checkInDate}</span></div>
+              <div class="detail-row"><span><strong>Check-out:</strong></span><span>${checkOutDate}</span></div>
+              <div class="detail-row"><span><strong>Duration:</strong></span><span>${nights} night${nights > 1 ? 's' : ''}</span></div>
+              <div class="detail-row"><span><strong>Guests:</strong></span><span>${guests} guest${guests > 1 ? 's' : ''}</span></div>
+              <div class="detail-row"><span><strong>Price per Night:</strong></span><span>₦${price_per_night.toLocaleString()}</span></div>
+              <div class="detail-row"><span><strong>Room Total:</strong></span><span>₦${roomTotal.toLocaleString()}</span></div>
+              ${caution_fee > 0 ? `<div class="detail-row"><span><strong>Caution Fee:</strong></span><span>₦${caution_fee.toLocaleString()}</span></div>` : ''}
+              <div class="total-row">Total Amount Paid: ₦${total_amount.toLocaleString()}</div>
+            </div>
+
+            <div class="access-code">
+              🔐 <strong>Access Code: ${access_code}</strong><br />
+              <small>Please present this code upon arrival for verification</small>
+            </div>
+
+            <p>Dear ${full_name},</p>
+            <p>Thank you for choosing HomeWhize for your accommodation needs. Your booking has been confirmed.</p>
+            <p><strong>Important:</strong> Please keep your access code safe and present it to the property owner upon arrival for verification.</p>
+
+            <p>We wish you a pleasant stay!</p>
+            <p>Best regards,<br /><strong>The HomeWhize Team</strong></p>
+          </div>
+          <div class="footer">
+            <p>&copy; 2026 HomeWhize. All rights reserved.</p>
+            <p>Booking Reference: <strong>${booking_reference}</strong></p>
+            <p>Account Email: <strong>${email}</strong></p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+}
+
+function getOwnerBookingNotificationTemplate(booking, property) {
+  const {
+    full_name,
+    email,
+    phone,
+    booking_reference,
+    check_in,
+    check_out,
+    nights,
+    guests,
+    access_code
+  } = booking;
+
+  const checkInDate = new Date(check_in).toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  const checkOutDate = new Date(check_out).toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  const ownerName = property.admin_name || "Property Owner";
+
+  return `
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>New Booking Notification - HomeWhize</title>
+        <style>
+          body { font-family: 'Poppins', Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 20px; }
+          .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .header { background: linear-gradient(135deg, #0F4D3C 0%, #1a6b55 100%); padding: 40px 20px; text-align: center; color: white; }
+          .content { padding: 40px 30px; line-height: 1.6; }
+          .booking-details { background: #F6EEE2; border-radius: 8px; padding: 20px; margin: 20px 0; border-left: 4px solid #0F4D3C; }
+          .detail-row { display: flex; justify-content: space-between; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #ddd; }
+          .detail-row:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+          .guest-info { background: #E8F4F8; border-radius: 8px; padding: 20px; margin: 20px 0; border-left: 4px solid #0F4D3C; }
+          .access-code { background: #FFF1DB; color: #C27B3E; padding: 15px; border-radius: 6px; text-align: center; margin: 20px 0; border: 1px solid #C27B3E; }
+          .notification-message { background: #DFF6EA; color: #0F4D3C; padding: 15px; border-radius: 6px; text-align: center; margin: 20px 0; border: 1px solid #0F4D3C; }
+          .footer { background: #f8f8f8; padding: 20px 30px; text-align: center; color: #666; font-size: 14px; }
+          .reference-highlight { background: #FFF1DB; color: #C27B3E; padding: 10px; border-radius: 4px; display: inline-block; font-weight: bold; font-size: 16px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>New Booking Alert!</h1>
+            <p>You have received a new booking for ${property.name}</p>
+          </div>
+          <div class="content">
+            <div class="notification-message">
+              📅 <strong>New Booking Confirmed</strong><br />
+              A guest has successfully booked your property and completed payment.
+            </div>
+
+            <div style="text-align:center; margin:20px 0;">
+              <span class="reference-highlight">Booking Reference: ${booking_reference}</span>
+            </div>
+
+            <div class="booking-details">
+              <h3 style="margin-top: 0; color: #0F4D3C;">📅 Booking Details</h3>
+              <div class="detail-row"><span><strong>Property:</strong></span><span>${property.name}</span></div>
+              <div class="detail-row"><span><strong>Check-in:</strong></span><span>${checkInDate}</span></div>
+              <div class="detail-row"><span><strong>Check-out:</strong></span><span>${checkOutDate}</span></div>
+              <div class="detail-row"><span><strong>Duration:</strong></span><span>${nights} night${nights > 1 ? 's' : ''}</span></div>
+              <div class="detail-row"><span><strong>Guests:</strong></span><span>${guests} guest${guests > 1 ? 's' : ''}</span></div>
+            </div>
+
+            <div class="guest-info">
+              <h3 style="margin-top: 0; color: #0F4D3C;">👤 Guest Information</h3>
+              <div class="detail-row"><span><strong>Name:</strong></span><span>${full_name}</span></div>
+              <div class="detail-row"><span><strong>Email:</strong></span><span>${email}</span></div>
+              <div class="detail-row"><span><strong>Phone:</strong></span><span>${phone}</span></div>
+            </div>
+
+            <div class="access-code">
+              🔐 <strong>Access Code: ${access_code}</strong><br />
+              <small>The guest will present this code upon arrival for verification</small>
+            </div>
+
+            <p>Dear ${ownerName},</p>
+            <p>A new booking has been confirmed for your property. The guest has completed payment and will be arriving on the specified check-in date.</p>
+            <p><strong>Important:</strong> Please verify the guest's access code (${access_code}) upon their arrival to ensure security.</p>
+
+            <p>Best regards,<br /><strong>The HomeWhize Team</strong></p>
+          </div>
+          <div class="footer">
+            <p>&copy; 2026 HomeWhize. All rights reserved.</p>
+            <p>Booking Reference: <strong>${booking_reference}</strong></p>
           </div>
         </div>
       </body>

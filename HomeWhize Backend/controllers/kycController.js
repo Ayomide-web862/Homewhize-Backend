@@ -4,7 +4,7 @@ import crypto from "crypto";
 import http from "http";
 import https from "https";
 import { createSubaccountForUser } from "./paystackSubaccountController.js";
-import { getSubaccountByUserId } from "../models/subaccountModel.js";
+import { getSubaccountByUserId, saveSubaccount } from "../models/subaccountModel.js";
 
 // Upload helper with better error handling
 const uploadToCloudinary = async (file) => {
@@ -29,25 +29,52 @@ const uploadToCloudinary = async (file) => {
   }
 };
 
+const persistAccountNameIfExists = async (id, account_name) => {
+  if (!account_name) return;
+
+  try {
+    await db.execute("UPDATE kyc_requests SET account_name = ? WHERE id = ?", [account_name, id]);
+  } catch (err) {
+    if (err && err.code === 'ER_BAD_FIELD_ERROR') {
+      console.warn("account_name column missing in kyc_requests; skipping persist of account name.");
+      return;
+    }
+    throw err;
+  }
+};
+
+const safeKycUpdate = async (sql, params) => {
+  try {
+    return await db.execute(sql, params);
+  } catch (err) {
+    if (err && err.code === 'ER_BAD_FIELD_ERROR') {
+      console.warn("Skipping KYC DB update due to missing optional field:", err.sql || sql, err.message);
+      return null;
+    }
+    throw err;
+  }
+};
+
 /* ADMIN SUBMIT KYC - WITH DUPLICATE CHECK */
 export const submitKYC = async (req, res) => {
   try {
     // Validate required fields
-    const { fullName, email, phone, address, bankName, accountNumber } = req.body;
-    const bankCode = req.body.bankCode || ""; // Make bankCode optional
-    
-    if (!fullName || !email || !phone || !address || !bankName || !accountNumber) {
-      return res.status(400).json({ 
-        message: "All fields (fullName, email, phone, address, bankName, accountNumber) are required" 
+    const { fullName, email, phone, address, bankName, bankCode, accountNumber } = req.body;
+
+    if (!fullName || !email || !phone || !address || !bankName || !bankCode || !accountNumber) {
+      return res.status(400).json({
+        message: "All fields (fullName, email, phone, address, bankName, bankCode, accountNumber) are required"
       });
     }
 
-    // Validate files
-    if (!req.files?.idDocument?.[0]) {
-      return res.status(400).json({ message: "ID Document is required" });
+    // Validate bank_code format (should be numeric)
+    if (!/^\d+$/.test(bankCode)) {
+      return res.status(400).json({ message: "Invalid bank code format" });
     }
-    if (!req.files?.ownershipDocument?.[0]) {
-      return res.status(400).json({ message: "Ownership Document is required" });
+
+    // Validate account_number format (should be 10 digits)
+    if (!/^\d{10}$/.test(accountNumber)) {
+      return res.status(400).json({ message: "Account number must be 10 digits" });
     }
 
     // Check for duplicate submission (user can only have one pending/approved KYC)
@@ -57,8 +84,8 @@ export const submitKYC = async (req, res) => {
     );
 
     if (existing && existing.length > 0) {
-      return res.status(409).json({ 
-        message: `KYC already submitted with status: ${existing[0].status}. Please wait for approval.` 
+      return res.status(409).json({
+        message: `KYC already submitted with status: ${existing[0].status}. Please wait for approval.`
       });
     }
 
@@ -68,7 +95,7 @@ export const submitKYC = async (req, res) => {
 
     // Insert into database
     const [result] = await db.execute(
-      `INSERT INTO kyc_requests 
+      `INSERT INTO kyc_requests
       (user_id, full_name, email, phone, address, bank_name, bank_code, account_number, id_document_url, ownership_document_url, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
@@ -86,8 +113,8 @@ export const submitKYC = async (req, res) => {
       ]
     );
 
-    res.status(201).json({ 
-      message: "KYC submitted successfully", 
+    res.status(201).json({
+      message: "KYC submitted successfully",
       status: "Pending",
       id: result.insertId
     });
@@ -126,10 +153,36 @@ export const getMyKYCStatus = async (req, res) => {
 /* SUPER ADMIN GET ALL */
 export const getAllKYC = async (req, res) => {
   try {
-    const [rows] = await db.execute(
-      "SELECT id, user_id, full_name, email, phone, address, bank_name, account_number, id_document_url, ownership_document_url, status, created_at, updated_at FROM kyc_requests ORDER BY created_at DESC"
+    const optionalColumns = ['account_name', 'provisioning_status', 'provisioning_error', 'provisioned_at'];
+    const columnChecks = await Promise.all(
+      optionalColumns.map((column) => db.execute(`SHOW COLUMNS FROM kyc_requests LIKE '${column}'`))
     );
-    
+
+    const selectedColumns = [
+      'id',
+      'user_id',
+      'full_name',
+      'email',
+      'phone',
+      'address',
+      'bank_name',
+      'bank_code',
+      'account_number',
+    ];
+
+    columnChecks.forEach((result, index) => {
+      const [rows] = result;
+      if (rows && rows.length > 0) {
+        selectedColumns.push(optionalColumns[index]);
+      }
+    });
+
+    selectedColumns.push('id_document_url', 'ownership_document_url', 'status', 'created_at', 'updated_at');
+
+    const [rows] = await db.execute(
+      `SELECT ${selectedColumns.join(', ')} FROM kyc_requests ORDER BY created_at DESC`
+    );
+
     res.json(rows || []);
   } catch (err) {
     console.error("Get all KYC error:", err);
@@ -153,8 +206,8 @@ export const updateKYCStatus = async (req, res) => {
     // Validate status
     const validStatuses = ["Pending", "Approved", "Rejected"];
     if (!status || !validStatuses.includes(status)) {
-      return res.status(400).json({ 
-        message: `Invalid status. Must be one of: ${validStatuses.join(", ")}` 
+      return res.status(400).json({
+        message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`
       });
     }
 
@@ -168,38 +221,150 @@ export const updateKYCStatus = async (req, res) => {
       return res.status(404).json({ message: "KYC request not found" });
     }
 
-    // If approved, ensure subaccount creation once per user
+    const kycRecord = existing[0];
+
+    // If approving, perform provisioning automation
     if (status === "Approved") {
       try {
-        const userId = existing[0].user_id;
+        const userId = kycRecord.user_id;
+
+        // Validate required bank fields
+        if (!kycRecord.bank_code || !kycRecord.account_number) {
+          return res.status(400).json({
+            message: "Cannot approve KYC: Bank code and account number are required"
+          });
+        }
+
+        // Check if subaccount already exists
         const existingSub = await getSubaccountByUserId(userId);
 
         if (!existingSub) {
-          const business_name = existing[0].full_name || "Untitled Business";
-          const bank_code = existing[0].bank_code || null;
-          const account_number = existing[0].account_number || null;
-
-          if (!bank_code || !account_number) {
-            throw new Error("Bank code and account number are required for subaccount onboarding");
+          // Resolve bank account with Paystack
+          const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+          if (!paystackSecret) {
+            throw new Error("Paystack secret key is not configured");
           }
 
-          await createSubaccountForUser({
-            user_id: userId,
+          const resolveResponse = await fetch(
+            `https://api.paystack.co/bank/resolve?account_number=${encodeURIComponent(kycRecord.account_number)}&bank_code=${encodeURIComponent(kycRecord.bank_code)}`,
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${paystackSecret}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+
+          const resolved = await resolveResponse.json();
+          if (!resolved || !resolved.status || !resolved.data) {
+            throw new Error("Invalid bank account details provided");
+          }
+
+          const account_name = resolved.data.account_name;
+          if (!account_name) {
+            throw new Error("Bank account verification failed - no account name returned");
+          }
+
+          // Update KYC record with resolved account name when the column exists
+          await persistAccountNameIfExists(id, account_name);
+
+          // Create Paystack subaccount
+          const percentageCharge = Number(process.env.PAYSTACK_COMMISSION_PERCENTAGE || "10");
+          const business_name = kycRecord.full_name || "Untitled Business";
+
+          const subaccountPayload = {
             business_name,
-            bank_code,
-            account_number,
-            bank_name: existing[0].bank_name,
-            email: existing[0].email,
-            full_name: existing[0].full_name,
+            settlement_bank: kycRecord.bank_code,
+            account_number: kycRecord.account_number,
+            account_name,
+            percentage_charge: Number.isFinite(percentageCharge) ? percentageCharge : 10,
+            primary_contact: kycRecord.full_name || business_name,
+            primary_contact_email: kycRecord.email || null,
+          };
+
+          const subaccountResp = await fetch("https://api.paystack.co/subaccount", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${paystackSecret}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(subaccountPayload),
           });
+
+          const subaccountData = await subaccountResp.json();
+          if (!subaccountData || !subaccountData.status || !subaccountData.data || !subaccountData.data.subaccount_code) {
+            console.error("Paystack subaccount creation failed", subaccountData);
+            throw new Error("Failed to create Paystack subaccount");
+          }
+
+          const subaccount_code = subaccountData.data.subaccount_code;
+
+          // Create transfer recipient
+          const recipientPayload = {
+            type: "nuban",
+            name: business_name,
+            account_number: kycRecord.account_number,
+            bank_code: kycRecord.bank_code,
+            currency: "NGN",
+            email: kycRecord.email || undefined,
+          };
+
+          const recipientResp = await fetch("https://api.paystack.co/transferrecipient", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${paystackSecret}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(recipientPayload),
+          });
+
+          const recipientData = await recipientResp.json();
+          if (!recipientData || !recipientData.status || !recipientData.data || !recipientData.data.recipient_code) {
+            console.error("Paystack transfer recipient creation failed", recipientData);
+            throw new Error("Failed to create Paystack transfer recipient");
+          }
+
+          const transfer_recipient_code = recipientData.data.recipient_code;
+
+          // Save subaccount to database
+          await saveSubaccount(userId, subaccount_code, {
+            bank_name: kycRecord.bank_name,
+            bank_code: kycRecord.bank_code,
+            account_number: kycRecord.account_number,
+          }, transfer_recipient_code);
+
+          // Update provisioning status
+          await safeKycUpdate(
+            "UPDATE kyc_requests SET provisioning_status = 'success', provisioned_at = NOW() WHERE id = ?",
+            [id]
+          );
+
+        } else {
+          // Subaccount already exists, just mark as provisioned if not already
+          await safeKycUpdate(
+            "UPDATE kyc_requests SET provisioning_status = 'success', provisioned_at = NOW() WHERE id = ? AND provisioning_status != 'success'",
+            [id]
+          );
         }
-      } catch (subErr) {
-        console.error("Subaccount creation error for user after KYC approval:", subErr);
-        return res.status(500).json({ message: "Failed to onboard subaccount for approved KYC", error: subErr.message });
+      } catch (provisioningErr) {
+        console.error("KYC provisioning error for user:", kycRecord.user_id, provisioningErr);
+
+        // Update provisioning status to failed
+        await safeKycUpdate(
+          "UPDATE kyc_requests SET provisioning_status = 'failed', provisioning_error = ? WHERE id = ?",
+          [provisioningErr.message || "Provisioning failed", id]
+        );
+
+        return res.status(500).json({
+          message: "KYC approved but provisioning failed",
+          error: provisioningErr.message,
+          details: "The KYC was approved but Paystack subaccount/recipient creation failed. Please check the provisioning_error field."
+        });
       }
     }
 
-    // Update status
+    // Update KYC status
     const [result] = await db.execute(
       "UPDATE kyc_requests SET status=?, updated_at=NOW() WHERE id=?",
       [status, id]
@@ -209,7 +374,7 @@ export const updateKYCStatus = async (req, res) => {
       return res.status(500).json({ message: "Failed to update KYC status" });
     }
 
-    res.json({ 
+    res.json({
       message: `KYC status updated to ${status}`,
       id,
       status
@@ -301,9 +466,19 @@ export const downloadDocument = async (req, res) => {
         const apiSecret = (process.env.CLOUDINARY_API_SECRET || cloudinary.config().api_secret || "").toString().trim();
         const apiKey = (process.env.CLOUDINARY_API_KEY || cloudinary.config().api_key || "").toString().trim();
         const cloudName = (process.env.CLOUDINARY_NAME || cloudinary.config().cloud_name || "").toString().trim();
-        const stringToSign = `public_id=${publicId}&timestamp=${timestamp}`;
-        const signature = crypto.createHash("sha1").update(stringToSign + apiSecret).digest("hex");
-        signedUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/download?timestamp=${timestamp}&public_id=${encodeURIComponent(publicId)}&signature=${signature}&api_key=${apiKey}`;
+        
+        // For private download URLs, include all parameters in signature
+        const params = {
+          public_id: publicId,
+          timestamp: timestamp.toString(),
+          api_key: apiKey
+        };
+        
+        // Sort parameters alphabetically and create string to sign
+        const sortedParams = Object.keys(params).sort().map(key => `${key}=${params[key]}`).join('&');
+        const signature = crypto.createHash("sha1").update(sortedParams + apiSecret).digest("hex");
+        
+        signedUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/download?${sortedParams}&signature=${signature}`;
       }
     } catch (e) {
       console.error("Failed to generate signed Cloudinary URL:", e);
@@ -374,7 +549,24 @@ export const getSignedDocumentUrl = async (req, res) => {
       if (cloudinary.utils && typeof cloudinary.utils.private_download_url === "function") {
         signedUrl = cloudinary.utils.private_download_url(publicId, { resource_type: "auto" });
       } else {
-        signedUrl = cloudinary.url(publicId, { resource_type: "auto", sign_url: true, secure: true });
+        // Fallback: generate signed URL manually for consistency
+        const timestamp = Math.floor(Date.now() / 1000);
+        const apiSecret = (process.env.CLOUDINARY_API_SECRET || cloudinary.config().api_secret || "").toString().trim();
+        const apiKey = (process.env.CLOUDINARY_API_KEY || cloudinary.config().api_key || "").toString().trim();
+        const cloudName = (process.env.CLOUDINARY_NAME || cloudinary.config().cloud_name || "").toString().trim();
+        
+        // For signed URLs, include all parameters in signature
+        const params = {
+          public_id: publicId,
+          timestamp: timestamp.toString(),
+          api_key: apiKey
+        };
+        
+        // Sort parameters alphabetically and create string to sign
+        const sortedParams = Object.keys(params).sort().map(key => `${key}=${params[key]}`).join('&');
+        const signature = crypto.createHash("sha1").update(sortedParams + apiSecret).digest("hex");
+        
+        signedUrl = `https://res.cloudinary.com/${cloudName}/image/upload/${sortedParams}&signature=${signature}`;
       }
     } catch (e) {
       console.error("Signed URL generation failed:", e);
@@ -441,6 +633,41 @@ export const getSignedDocumentDebug = async (req, res) => {
   } catch (err) {
     console.error("Signed debug error:", err);
     res.status(500).json({ message: "Failed to generate signed debug info", error: err.message });
+  }
+};
+
+/* GET PAYSTACK BANKS LIST - Protected endpoint for frontend dropdown */
+export const getBanksList = async (req, res) => {
+  try {
+    const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+    if (!paystackSecret) {
+      return res.status(500).json({ message: "Paystack not configured" });
+    }
+
+    const resp = await fetch("https://api.paystack.co/bank", {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${paystackSecret}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    const data = await resp.json();
+    if (!data || !data.status) {
+      console.error("Paystack banks list error:", data);
+      return res.status(502).json({ message: "Failed to fetch banks list" });
+    }
+
+    // Return frontend-friendly format
+    const banks = (data.data || []).map(bank => ({
+      name: bank.name,
+      code: bank.code
+    }));
+
+    res.json({ banks });
+  } catch (error) {
+    console.error("getBanksList error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 

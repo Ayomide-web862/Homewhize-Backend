@@ -1,4 +1,5 @@
 import db from "../config/db.js";
+import crypto from "crypto";
 import { createBooking, getBookingByReference, updateBookingPaymentStatus } from "../models/bookingModel.js";
 import { createBookedDates } from "../models/bookedDatesModel.js";
 import { getSubaccountByUserId, updateSubaccountRecipientCode } from "../models/subaccountModel.js";
@@ -18,7 +19,7 @@ const parseJson = (value) => {
 
 export const fetchPropertyById = async (property_id) => {
   const [rows] = await db.execute(
-    `SELECT id, price, caution_fee, admin_id, admin_name, admin_email FROM properties WHERE id = ? LIMIT 1`,
+    `SELECT id, price, caution_fee, admin_id, admin_name, admin_email, slug FROM properties WHERE id = ? LIMIT 1`,
     [property_id]
   );
   return rows && rows.length > 0 ? rows[0] : null;
@@ -45,6 +46,7 @@ export const buildBookingSnapshotFromRequest = async ({ property_id, user_id, fu
 
   return {
     property_id: property.id,
+    property_slug: property.slug,
     user_id,
     owner_user_id: property.admin_id || null,
     full_name,
@@ -69,10 +71,12 @@ export const buildBookingSnapshotFromRequest = async ({ property_id, user_id, fu
   };
 };
 
-export const buildPaystackMetadata = (booking_reference) => {
+export const buildPaystackMetadata = (booking_reference, bookingSnapshot) => {
   return {
     booking_reference,
     booking_source: "shortlet",
+    property_id: bookingSnapshot.property_id,
+    property_slug: bookingSnapshot.property_slug,
   };
 };
 
@@ -121,6 +125,9 @@ export const finalizeShortletBooking = async (transaction, paystackPayload = nul
     caution_fee: Number(property.caution_fee) || 0,
   });
 
+  // Generate unique access code for booking verification
+  const accessCode = `HWZ-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
   const bookingPayload = {
     property_id: property.id,
     user_id: bookingData.user_id,
@@ -151,6 +158,7 @@ export const finalizeShortletBooking = async (transaction, paystackPayload = nul
     caution_fee_status: "held",
     owner_payout_status: "pending",
     stay_outcome: "pending",
+    access_code: accessCode,
   };
 
   const bookingResult = await createBooking(bookingPayload);
