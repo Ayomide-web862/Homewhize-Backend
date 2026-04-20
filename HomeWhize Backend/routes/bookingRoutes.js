@@ -1,27 +1,73 @@
 import express from "express";
-import { createNewBooking, settleBooking, cancelBooking, getAllBookings } from "../controllers/bookingController.js";
+import {
+  createNewBooking,
+  approveOwnerPayout,
+  refundCautionFee,
+  releaseCautionFeeToOwner,
+  cancelBooking,
+  getAllBookings,
+  getBookingsForSettlement
+} from "../controllers/bookingController.js";
 import { protect, roleMiddleware } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
 /**
- * GET ALL BOOKINGS - ADMIN ONLY
+ * GET ALL BOOKINGS
+ * admin = own-property bookings
+ * superadmin/master = all bookings
  */
-router.get("/", protect, getAllBookings);
+router.get(
+  "/",
+  protect,
+  roleMiddleware("admin", "superadmin", "master"),
+  getAllBookings
+);
+
+router.get(
+  "/settlement",
+  protect,
+  roleMiddleware("superadmin", "master"),
+  getBookingsForSettlement
+);
 
 /**
- * CREATE BOOKING (AUTH REQUIRED)
+ * CREATE BOOKING
+ * only guests/users should create shortlet bookings
  */
-router.post("/", protect, createNewBooking);
+router.post(
+  "/",
+  protect,
+  roleMiddleware("user"),
+  createNewBooking
+);
 
-/**
- * SETTLE BOOKING AFTER STAY AND RELEASE FUNDS
- */
-router.post("/:id/settle", protect, roleMiddleware("admin", "superadmin", "master"), settleBooking);
+router.post(
+  "/:id/approve-payout",
+  protect,
+  roleMiddleware("superadmin", "master"),
+  approveOwnerPayout
+);
 
-/**
- * CANCEL BOOKING - ADMIN ONLY
- */
-router.post("/:id/cancel", protect, roleMiddleware("admin", "superadmin"), cancelBooking);
+router.post(
+  "/:id/refund-caution-fee",
+  protect,
+  roleMiddleware("superadmin", "master"),
+  refundCautionFee
+);
+
+router.post(
+  "/:id/release-caution-fee",
+  protect,
+  roleMiddleware("superadmin", "master"),
+  releaseCautionFeeToOwner
+);
+
+router.post(
+  "/:id/cancel",
+  protect,
+  roleMiddleware("admin", "superadmin", "master"),
+  cancelBooking
+);
 
 export default router;

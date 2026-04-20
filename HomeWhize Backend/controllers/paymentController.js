@@ -242,13 +242,24 @@ export const verifyPayment = async (req, res) => {
 
       if (isShortletBooking) {
         try {
-          const result = await finalizeShortletBooking(tx, data.data);
+          const result = await finalizeShortletBooking({
+            transaction: tx,
+            paystack_data: data.data
+          });
           bookingReference = result.booking_reference || bookingReference;
           bookingCreated = result.created || false;
           bookingAlreadyExists = result.already_exists || false;
           bookingType = "shortlet";
-          if (result.created && result.bookingData) {
-            await sendBookingConfirmationEmail(result.bookingData);
+          
+          // Get property information for redirect
+          if (result.bookingData && result.bookingData.property_id) {
+            const [propertyRows] = await db.execute(
+              'SELECT slug FROM properties WHERE id = ? LIMIT 1',
+              [result.bookingData.property_id]
+            );
+            if (propertyRows && propertyRows.length > 0) {
+              var propertySlug = propertyRows[0].slug;
+            }
           }
         } catch (finalizeError) {
           console.error("Shortlet booking finalization failed:", finalizeError);
@@ -286,116 +297,11 @@ export const verifyPayment = async (req, res) => {
       booking_reference: bookingReference,
       booking_created: bookingCreated,
       booking_already_exists: bookingAlreadyExists,
+      property_slug: propertySlug || null,
     });
   } catch (error) {
     console.error("verifyPayment error:", error);
     res.status(500).json({ message: "Verification failed" });
-  }
-};
-
-// Paystack callback redirect handler - sends user back to frontend verify page
-export const paymentCallback = async (req, res) => {
-  try {
-    const reference = req.query.reference || req.query.tx_ref || req.query.trxref || req.query.transaction || null;
-    const frontendUrl = (process.env.PAYSTACK_FRONTEND_REDIRECT || process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
-
-    if (!reference) {
-      return res.redirect(frontendUrl + "/payments/verify");
-    }
-
-    // Fetch transaction to get metadata for proper redirection
-    const tx = await getTransactionByReference(reference);
-    if (tx && tx.paystack_payload && tx.paystack_payload.metadata) {
-      const metadata = tx.paystack_payload.metadata;
-      if (metadata.booking_source === "shortlet" && metadata.property_slug) {
-        // Redirect to specific shortlet page with success params
-        return res.redirect(`${frontendUrl}/shortlets/${metadata.property_slug}?booking_success=1&booking_reference=${encodeURIComponent(metadata.booking_reference)}`);
-      }
-    }
-
-    // Fallback to verify page
-    return res.redirect(`${frontendUrl}/payments/verify?reference=${encodeURIComponent(reference)}`);
-  } catch (err) {
-    console.error('paymentCallback error:', err);
-    return res.status(500).send('server error');
-  }
-};
-
-// Raw body webhook handler for Paystack events
-export const paystackWebhook = async (req, res) => {
-  try {
-    const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
-    const signature = req.headers['x-paystack-signature'];
-
-    // req.body is a Buffer when using express.raw middleware for this route
-    const rawBody = req.body;
-    if (!rawBody) return res.status(400).send('No body');
-
-    const computed = crypto.createHmac('sha512', paystackSecret).update(rawBody).digest('hex');
-    if (signature !== computed) {
-      console.warn('Invalid Paystack webhook signature');
-      return res.status(400).send('Invalid signature');
-    }
-
-    const payload = JSON.parse(rawBody.toString('utf8'));
-    const event = payload.event;
-    const data = payload.data;
-
-    const reference = data && data.reference;
-    if (!reference) {
-      console.warn('Webhook without reference');
-      return res.status(400).send('no reference');
-    }
-
-    if (event === 'charge.success' || (data && data.status === 'success')) {
-      await updateTransactionStatus(reference, 'success', data);
-      try {
-        const tx = await getTransactionByReference(reference);
-        if (tx) {
-          const metadata = tx.paystack_payload && tx.paystack_payload.metadata ? tx.paystack_payload.metadata : null;
-          const isShortletBooking = tx.booking_snapshot_json || (metadata && metadata.booking_source === "shortlet");
-
-          if (isShortletBooking) {
-            try {
-              await finalizeShortletBooking(tx, data);
-            } catch (finalizeError) {
-              console.error('Shortlet booking finalization failed from webhook:', finalizeError);
-            }
-          } else if (metadata && metadata.booking_data) {
-            const bookingData = metadata.booking_data;
-            const bookingResult = await createBooking(bookingData);
-            const bookingId = bookingResult[0].insertId;
-
-            await createBookedDates(bookingData.property_id, bookingId, bookingData.check_in, bookingData.check_out);
-
-            try {
-              await sendBookingConfirmationEmail(bookingData);
-            } catch (emailErr) {
-              console.warn('Failed to send booking confirmation email:', emailErr);
-            }
-          } else if (metadata && metadata.booking_type === 'service') {
-            await updateServiceBookingPaymentStatus(tx.booking_reference, 'paid');
-          } else if (tx.booking_reference) {
-            await updateBookingPaymentStatus(tx.booking_reference, 'paid');
-          }
-
-          try {
-            if (global.__publicPropertiesCache) global.__publicPropertiesCache = {};
-          } catch (e) {
-            console.warn('Failed to invalidate public properties cache', e);
-          }
-        }
-      } catch (uerr) {
-        console.warn('Failed to update booking status from webhook:', uerr);
-      }
-    } else if (event === 'charge.failed') {
-      await updateTransactionStatus(reference, 'failed', data);
-    }
-
-    res.status(200).send('ok');
-  } catch (err) {
-    console.error('paystackWebhook error:', err);
-    res.status(500).send('server error');
   }
 };
 
@@ -405,5 +311,176 @@ export const listTransactionsHandler = async (req, res, next) => {
     res.json({ transactions: rows });
   } catch (err) {
     next(err);
+  }
+};
+
+// Paystack callback handler (user redirect after payment)
+export const paymentCallback = async (req, res) => {
+  try {
+    const { reference, trxref } = req.query;
+
+    if (!reference) {
+      console.error('[CALLBACK] Missing reference in callback');
+      return res.status(400).send('Missing payment reference');
+    }
+
+    // Get transaction details
+    const transaction = await getTransactionByReference(reference);
+    if (!transaction) {
+      console.error(`[CALLBACK] Transaction not found: ${reference}`);
+      return res.status(404).send('Transaction not found');
+    }
+
+    // Check if payment was successful by verifying with Paystack
+    const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+    if (!paystackSecret) {
+      console.error('[CALLBACK] Paystack secret not configured');
+      return res.status(500).send('Server configuration error');
+    }
+
+    const verifyResponse = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${paystackSecret}`,
+      },
+    });
+
+    const verifyData = await verifyResponse.json();
+
+    if (!verifyData.status || verifyData.data.status !== 'success') {
+      console.error(`[CALLBACK] Payment verification failed for ${reference}:`, verifyData);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/failed?reference=${reference}&error=verification_failed`);
+    }
+
+    // Update transaction status if not already updated by webhook
+    if (transaction.status !== 'success') {
+      await updateTransactionStatus(reference, 'success');
+
+      // Finalize booking if this is a booking payment
+      if (transaction.booking_reference) {
+        try {
+          const bookingResult = await finalizeShortletBooking({
+            transaction: transaction,
+            paystack_data: verifyData.data
+          });
+
+          if (bookingResult.success !== false) {
+            console.log(`[CALLBACK] Booking finalized via callback: ${transaction.booking_reference}`);
+          } else {
+            console.error(`[CALLBACK] Failed to finalize booking via callback: ${bookingResult.error}`);
+          }
+        } catch (bookingError) {
+          console.error(`[CALLBACK] Booking finalization error:`, bookingError);
+          // Continue with success redirect - booking will be handled by webhook if it arrives
+        }
+      }
+    }
+
+    // Redirect to success page
+    const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/success?reference=${reference}`;
+    console.log(`[CALLBACK] Redirecting to success: ${successUrl}`);
+    return res.redirect(successUrl);
+
+  } catch (error) {
+    console.error('[CALLBACK] Unexpected error:', error);
+    return res.status(500).send('Server error');
+  }
+};
+
+// Paystack webhook handler for payment verification
+export const paystackWebhook = async (req, res) => {
+  try {
+    const secret = process.env.PAYSTACK_SECRET_KEY;
+    if (!secret) {
+      console.error('[WEBHOOK] Paystack secret not configured');
+      return res.status(500).json({ message: 'Server configuration error' });
+    }
+
+    // Get the raw body and signature from Paystack
+    const rawBody = req.body;
+    const signature = req.headers['x-paystack-signature'];
+
+    if (!signature) {
+      console.error('[WEBHOOK] Missing Paystack signature');
+      return res.status(400).json({ message: 'Missing signature' });
+    }
+
+    // Verify webhook signature
+    const expectedSignature = crypto
+      .createHmac('sha512', secret)
+      .update(JSON.stringify(rawBody))
+      .digest('hex');
+
+    if (signature !== expectedSignature) {
+      console.error('[WEBHOOK] Invalid signature');
+      return res.status(400).json({ message: 'Invalid signature' });
+    }
+
+    const event = rawBody.event;
+    const data = rawBody.data;
+
+    console.log(`[WEBHOOK] Received event: ${event}`, { reference: data?.reference });
+
+    // Only process successful payment events
+    if (event === 'charge.success') {
+      const reference = data.reference;
+
+      if (!reference) {
+        console.error('[WEBHOOK] No reference in charge.success event');
+        return res.status(400).json({ message: 'Missing reference' });
+      }
+
+      try {
+        // Get transaction details
+        const transaction = await getTransactionByReference(reference);
+        if (!transaction) {
+          console.error(`[WEBHOOK] Transaction not found for reference: ${reference}`);
+          return res.status(404).json({ message: 'Transaction not found' });
+        }
+
+        // Check if already processed
+        if (transaction.status === 'success') {
+          console.log(`[WEBHOOK] Transaction ${reference} already processed`);
+          return res.status(200).json({ message: 'Already processed' });
+        }
+
+        // Update transaction status
+        await updateTransactionStatus(reference, 'success');
+
+        // If this is a booking payment, finalize the booking
+        if (transaction.booking_reference) {
+          console.log(`[WEBHOOK] Finalizing booking for reference: ${reference}`);
+
+          // Get booking details from transaction metadata or reference
+          const bookingResult = await finalizeShortletBooking({
+            transaction: transaction,
+            paystack_data: data
+          });
+
+          if (bookingResult.success !== false) { // Allow undefined success as success
+            console.log(`[WEBHOOK] Booking finalized successfully: ${transaction.booking_reference}`);
+          } else {
+            console.error(`[WEBHOOK] Failed to finalize booking: ${bookingResult.error}`);
+            // Don't return error here - transaction is successful, booking finalization failed
+            // This should trigger manual intervention
+          }
+        }
+
+        console.log(`[WEBHOOK] Payment processed successfully: ${reference}`);
+        return res.status(200).json({ message: 'Payment processed' });
+
+      } catch (processingError) {
+        console.error(`[WEBHOOK] Error processing payment ${reference}:`, processingError);
+        return res.status(500).json({ message: 'Processing error' });
+      }
+    }
+
+    // Acknowledge other events but don't process them
+    console.log(`[WEBHOOK] Unhandled event: ${event}`);
+    return res.status(200).json({ message: 'Event acknowledged' });
+
+  } catch (error) {
+    console.error('[WEBHOOK] Unexpected error:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 };

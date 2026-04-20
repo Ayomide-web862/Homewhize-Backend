@@ -6,7 +6,18 @@ import { createUser, findUserByEmail } from "../models/userModel.js";
 import { sendSignupEmail } from "../utils/emailService.js";
 
 dotenv.config();
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const googleClientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID;
+
+if (!googleClientId) {
+  console.error("[Google Auth] GOOGLE_CLIENT_ID or VITE_GOOGLE_CLIENT_ID is not configured.");
+}
+
+const createGoogleClient = () => {
+  if (!googleClientId) {
+    throw new Error("Google client ID is not configured");
+  }
+  return new OAuth2Client(googleClientId);
+};
 
 export const googleAuth = async (req, res) => {
   try {
@@ -15,30 +26,41 @@ export const googleAuth = async (req, res) => {
     if (!token)
       return res.status(400).json({ message: "Google token missing" });
 
+    if (!googleClientId) {
+      return res.status(500).json({
+        message:
+          "Google authentication is not configured on the server. Please set GOOGLE_CLIENT_ID or VITE_GOOGLE_CLIENT_ID.",
+      });
+    }
+
+    const client = createGoogleClient();
     const ticket = await client.verifyIdToken({
       idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      audience: googleClientId,
     });
 
-    const { email, name } = ticket.getPayload();
+    const payload = ticket.getPayload();
+    const email = payload?.email;
+    const name = payload?.name;
+
+    if (!email) {
+      return res.status(400).json({ message: "Google account did not provide an email address." });
+    }
 
     findUserByEmail(email, async (err, users) => {
       if (err)
         return res.status(500).json({ message: "Database error" });
 
       let user;
-      let isNewUser = false;
 
-      // 🟢 IF USER DOES NOT EXIST → CREATE
       if (users.length === 0) {
-        isNewUser = true;
         const randomPassword = await bcrypt.hash(
           Math.random().toString(36),
           10
         );
 
         createUser(
-          name,
+          name || email,
           email,
           randomPassword,
           "user",
@@ -51,19 +73,17 @@ export const googleAuth = async (req, res) => {
 
             user = {
               id: result.insertId,
-              name,
+              name: name || email,
               email,
               role: "user",
             };
 
-            // Send signup acknowledgment email for new Google users
             sendSignupEmail(user, "google")
               .then(() => {
                 console.log("Google signup email sent to", email);
               })
               .catch((emailErr) => {
                 console.warn("Failed to send Google signup email:", emailErr);
-                // Don't fail the login if email fails
               });
 
             issueToken(res, user);

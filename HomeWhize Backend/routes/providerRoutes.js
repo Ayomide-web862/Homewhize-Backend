@@ -1,5 +1,5 @@
 import express from "express";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, roleMiddleware } from "../middleware/authMiddleware.js";
 import {
   createProviderHandler,
   getProviderHandler,
@@ -13,7 +13,7 @@ import {
 const router = express.Router();
 
 // Specific routes first to avoid param collisions (/:id would capture 'me' or 'slug')
-router.post("/", createProviderHandler);
+router.post("/", protect, roleMiddleware("admin", "superadmin", "master"), createProviderHandler);
 router.get("/", listProvidersHandler);
 router.get("/slug/:slug", getProviderBySlugHandler); // specific slug route
 router.get("/me", protect, getMyProviderHandler); // provider for authenticated user

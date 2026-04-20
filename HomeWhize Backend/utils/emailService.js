@@ -1,4 +1,5 @@
 import { sendEmailSafely, getDefaultFrom } from "../config/emailConfig.js";
+import db from "../config/db.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -169,19 +170,32 @@ export const sendKYCReminderEmail = async (name, email) => {
  */
 export const sendBookingConfirmationEmail = async (booking) => {
   try {
-    const { full_name, email, booking_reference, property_id, check_in, check_out, nights, guests, price_per_night, total_amount, access_code } = booking;
+    const bookingRef = booking.booking_reference || 'unknown';
+    console.log(`[Email Service] Sending booking confirmation emails for ${bookingRef}`);
 
     // Send guest confirmation email
-    await sendGuestBookingConfirmationEmail(booking);
+    const guestResult = await sendGuestBookingConfirmationEmail(booking);
+    if (guestResult) {
+      console.log(`[Email Service] Guest confirmation sent for ${bookingRef}`);
+    } else {
+      console.warn(`[Email Service] Guest confirmation failed for ${bookingRef}`);
+    }
 
     // Send owner notification email
-    await sendOwnerBookingNotificationEmail(booking);
+    const ownerResult = await sendOwnerBookingNotificationEmail(booking);
+    if (ownerResult) {
+      console.log(`[Email Service] Owner notification sent for ${bookingRef}`);
+    } else {
+      console.warn(`[Email Service] Owner notification failed for ${bookingRef} (may be missing owner email)`);
+    }
 
-    console.log("Booking confirmation emails sent successfully to guest and owner");
-    return true;
+    const success = guestResult !== null; // Owner email is optional
+    console.log(`[Email Service] Booking confirmation emails completed for ${bookingRef}: ${success ? 'SUCCESS' : 'PARTIAL'}`);
+    return success;
   } catch (error) {
-    console.error("Error in sendBookingConfirmationEmail:", error.message);
-    return null;
+    const bookingRef = booking?.booking_reference || 'unknown';
+    console.error(`[Email Service] Critical error in sendBookingConfirmationEmail for ${bookingRef}:`, error.message);
+    return null; // Don't throw - email failure shouldn't break payment flow
   }
 };
 
@@ -222,15 +236,35 @@ export const sendGuestBookingConfirmationEmail = async (booking) => {
  */
 export const sendOwnerBookingNotificationEmail = async (booking) => {
   try {
-    // Get property details for owner info
-    const api = (await import("../api/axios")).default;
-    const { data: property } = await api.get(`/properties/${booking.property_id}`);
+    // Get property and owner details from database
+    const [propertyRows] = await db.execute(
+      `SELECT p.name as property_name, p.admin_name, p.admin_email, u.name as owner_name, u.email as owner_email
+       FROM properties p
+       LEFT JOIN users u ON p.admin_id = u.id
+       WHERE p.id = ?`,
+      [booking.property_id]
+    );
 
-    const ownerEmail = property.admin_email;
-    const ownerName = property.admin_name || "Property Owner";
+    if (!propertyRows || propertyRows.length === 0) {
+      console.warn(`Property ${booking.property_id} not found for booking ${booking.booking_reference}`);
+      return null;
+    }
+
+    const property = propertyRows[0];
+    const ownerEmail = property.admin_email || property.owner_email;
+    const ownerName = property.admin_name || property.owner_name || "Property Owner";
+
+    if (!ownerEmail) {
+      console.warn(`No owner email found for property ${booking.property_id}, booking ${booking.booking_reference}`);
+      return null;
+    }
 
     const subject = `New Booking - ${booking.booking_reference}`;
-    const html = getOwnerBookingNotificationTemplate(booking, property);
+    const html = getOwnerBookingNotificationTemplate(booking, {
+      name: property.property_name,
+      admin_name: ownerName,
+      admin_email: ownerEmail
+    });
 
     const mailOptions = {
       from: getDefaultFrom(),
@@ -241,13 +275,13 @@ export const sendOwnerBookingNotificationEmail = async (booking) => {
 
     const info = await sendEmailSafely(mailOptions);
     if (info) {
-      console.log("Owner booking notification email sent successfully to", ownerEmail);
+      console.log(`Owner booking notification email sent successfully to ${ownerEmail} for booking ${booking.booking_reference}`);
     } else {
-      console.warn("Owner booking notification email failed to send to", ownerEmail);
+      console.warn(`Owner booking notification email failed to send to ${ownerEmail} for booking ${booking.booking_reference}`);
     }
     return info;
   } catch (error) {
-    console.error("Error in sendOwnerBookingNotificationEmail:", error.message);
+    console.error(`Error in sendOwnerBookingNotificationEmail for booking ${booking.booking_reference}:`, error.message);
     return null;
   }
 };
@@ -870,7 +904,7 @@ function getWelcomeTemplate(name, email, tempPassword, role) {
           </div>
 
           <div style="text-align: center; back">
-            <a href="https://homewhize.com/login" class="cta-button">Access Admin Dashboard style=" #eee;"</a>
+            <a href="https://homewhize.com/login" class="cta-button" style="background: #eee;">Access Admin Dashboard</a>
           </div>
 
           <div class="message" style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">

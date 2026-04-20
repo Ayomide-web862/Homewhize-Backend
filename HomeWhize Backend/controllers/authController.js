@@ -16,7 +16,8 @@ export const registerUser = (req, res) => {
     if (!name || !email || !password)
       return res.status(400).json({ message: "All fields are required" });
 
-    const assignedRole = allowedRoles.includes(role) ? role : "user";
+    // Force role to "user" for public signup - privileged roles must be created via admin endpoints
+    const assignedRole = "user";
 
     findUserByEmail(email, (err, result) => {
       if (err) return res.status(500).json({ message: "Database error" });

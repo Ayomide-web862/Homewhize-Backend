@@ -1,10 +1,19 @@
 import db from "../config/db.js";
 
 export const createBooking = (booking) => {
+  // Calculate business logic
+  const accommodationTotal = booking.nights * booking.price_per_night;
+  const platformFee = Math.round(accommodationTotal * 0.08 * 100) / 100; // 8% of accommodation only
+  const ownerEarnings = accommodationTotal - platformFee;
+  const totalAmount = accommodationTotal + booking.caution_fee;
+  
   const sql = `
     INSERT INTO bookings
-    (property_id, user_id, owner_user_id, full_name, email, phone, check_in, check_out, nights, guests, price_per_night, total_amount, booking_reference, caution_fee, platform_fee_amount, owner_earnings_amount, owner_payout_amount, payment_breakdown_json, caution_fee_status, owner_payout_status, stay_outcome, caution_fee_refund_reference, owner_transfer_reference, access_code)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (property_id, user_id, owner_user_id, full_name, email, phone, check_in, check_out, 
+     nights, guests, price_per_night, total_amount, booking_reference, caution_fee, 
+     platform_fee_amount, owner_earnings_amount, owner_payout_amount, payment_breakdown_json, 
+     caution_fee_status, owner_payout_status, stay_outcome, dispute_status, payout_review_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   return db.execute(sql, [
@@ -19,30 +28,76 @@ export const createBooking = (booking) => {
     booking.nights,
     booking.guests,
     booking.price_per_night,
-    booking.total_amount,
+    totalAmount,
     booking.booking_reference,
     booking.caution_fee || 0,
-    booking.platform_fee_amount || 0,
-    booking.owner_earnings_amount || 0,
-    booking.owner_payout_amount || booking.owner_earnings_amount || 0,
-    JSON.stringify(booking.payment_breakdown_json || {}),
-    booking.caution_fee_status || 'held',
-    booking.owner_payout_status || 'pending',
-    booking.stay_outcome || 'pending',
-    booking.caution_fee_refund_reference || null,
-    booking.owner_transfer_reference || null,
-    booking.access_code || null
+    platformFee,
+    ownerEarnings,
+    ownerEarnings, // owner_payout_amount initially equals owner_earnings_amount
+    JSON.stringify({
+      accommodation_total: accommodationTotal,
+      platform_fee: platformFee,
+      owner_earnings: ownerEarnings,
+      caution_fee: booking.caution_fee || 0,
+      total_paid: totalAmount,
+      calculated_at: new Date().toISOString()
+    }),
+    'held', // caution_fee_status
+    'pending', // owner_payout_status
+    'pending', // stay_outcome
+    'none', // dispute_status
+    'awaiting_review' // payout_review_status
   ]);
 };
 
 export const getBookingByReference = async (booking_reference) => {
-  const [rows] = await db.execute(`SELECT * FROM bookings WHERE booking_reference = ? LIMIT 1`, [booking_reference]);
-  return rows && rows.length > 0 ? rows[0] : null;
+  const [rows] = await db.execute(`
+    SELECT *, 
+           CAST(payment_breakdown_json AS CHAR) as payment_breakdown_json_str
+    FROM bookings 
+    WHERE booking_reference = ? LIMIT 1
+  `, [booking_reference]);
+  
+  if (rows && rows.length > 0) {
+    const booking = rows[0];
+    // Safely parse JSON
+    if (booking.payment_breakdown_json_str) {
+      try {
+        booking.payment_breakdown_json = JSON.parse(booking.payment_breakdown_json_str);
+      } catch (e) {
+        booking.payment_breakdown_json = {};
+      }
+    } else {
+      booking.payment_breakdown_json = {};
+    }
+    return booking;
+  }
+  return null;
 };
 
 export const getBookingById = async (id) => {
-  const [rows] = await db.execute(`SELECT * FROM bookings WHERE id = ? LIMIT 1`, [id]);
-  return rows && rows.length > 0 ? rows[0] : null;
+  const [rows] = await db.execute(`
+    SELECT *, 
+           CAST(payment_breakdown_json AS CHAR) as payment_breakdown_json_str
+    FROM bookings 
+    WHERE id = ? LIMIT 1
+  `, [id]);
+  
+  if (rows && rows.length > 0) {
+    const booking = rows[0];
+    // Safely parse JSON
+    if (booking.payment_breakdown_json_str) {
+      try {
+        booking.payment_breakdown_json = JSON.parse(booking.payment_breakdown_json_str);
+      } catch (e) {
+        booking.payment_breakdown_json = {};
+      }
+    } else {
+      booking.payment_breakdown_json = {};
+    }
+    return booking;
+  }
+  return null;
 };
 
 export const updateBookingPaymentStatus = async (booking_reference, payment_status = 'paid') => {
@@ -55,7 +110,13 @@ export const updateBookingSettlement = async (booking_id, updates) => {
   if (keys.length === 0) return;
 
   const setClauses = keys.map((key) => `${key} = ?`).join(', ');
-  const params = keys.map((key) => updates[key]);
+  const params = keys.map((key) => {
+    // Handle JSON fields
+    if (key === 'payment_breakdown_json' && typeof updates[key] === 'object') {
+      return JSON.stringify(updates[key]);
+    }
+    return updates[key];
+  });
   params.push(booking_id);
 
   const sql = `UPDATE bookings SET ${setClauses}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;

@@ -66,57 +66,45 @@ export const createAdmin = async (req, res) => {
  */
 export const createOwner = async (req, res) => {
   try {
-    const { name, email, role = "user" } = req.body;
+    const { name, email } = req.body;
 
-    if (!name || !email)
+    if (!name || !email) {
       return res.status(400).json({ message: "Name and email are required" });
+    }
 
     findUserByEmail(email, async (err, result) => {
-      if (err)
+      if (err) {
         return res.status(500).json({ message: "Database error" });
+      }
 
-      if (result.length > 0)
+      if (result.length > 0) {
         return res.status(400).json({ message: "Email already exists" });
+      }
 
-      // Generate temporary password
       const tempPassword = "Homewhize@2026";
       const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
-      // Create user with temporary password
-      createUser(name, email, hashedPassword, role, "local", (err, result) => {
+      // Owners are always admins
+      createUser(name, email, hashedPassword, "admin", "local", (err, result) => {
         if (err) {
           console.error("Create owner error:", err);
-          // Detect enum/data truncation errors and give actionable message
-          if (err && err.errno === 1265) {
-            return res.status(500).json({ message: "Database rejected the role value. Ensure the 'cleaner' role is added to users.role enum (run migrations)." });
-          }
           return res.status(500).json({ message: "Failed to create owner account" });
         }
 
-        // Send welcome email with temporary password
-        sendWelcomeEmail(name, email, tempPassword, role)
-          .then(() => {
-            console.log("Welcome email sent to", role + ":", email);
-            
-            // Send KYC reminder after a short delay
-            setTimeout(() => {
-              sendKYCReminderEmail(name, email)
-                .then(() => {
-                  console.log("KYC reminder email sent to:", email);
-                })
-                .catch((kycErr) => {
-                  console.warn("Failed to send KYC reminder email:", kycErr);
-                });
-            }, 1000);
-          })
-          .catch((emailErr) => {
-            console.warn("Failed to send welcome email:", emailErr);
-            // Don't fail the creation if email fails
+        sendWelcomeEmail(name, email, tempPassword, "admin").catch((emailErr) => {
+          console.warn("Failed to send welcome email:", emailErr);
+        });
+
+        setTimeout(() => {
+          sendKYCReminderEmail(name, email).catch((kycErr) => {
+            console.warn("Failed to send KYC reminder email:", kycErr);
           });
+        }, 1000);
 
         return res.status(201).json({
-          message: `${role.charAt(0).toUpperCase() + role.slice(1)} account created successfully. Welcome email sent.`,
+          message: "Owner account created successfully. Welcome email sent.",
           userId: result.insertId,
+          role: "admin",
         });
       });
     });
@@ -137,7 +125,8 @@ export const createProvider = async (req, res) => {
     const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
     if (!emailRe.test(String(email).toLowerCase())) return res.status(400).json({ message: 'Invalid email format' });
 
-    // Start transaction
+    // Force role to 'cleaner' for provider creation - this endpoint is for service providers only
+    const assignedRole = 'cleaner';
     connection = await new Promise((resolve, reject) => db.getConnection((err, conn) => err ? reject(err) : resolve(conn)));
     const connP = connection.promise();
     await connP.beginTransaction();
@@ -156,7 +145,7 @@ export const createProvider = async (req, res) => {
     // Create user
     const [userRes] = await connP.execute(
       'INSERT INTO users (name, email, password, role, provider) VALUES (?, ?, ?, ?, ?)',
-      [company_name, email, hashed, role, 'local']
+      [company_name, email, hashed, assignedRole, 'local']
     );
     const userId = userRes.insertId;
 

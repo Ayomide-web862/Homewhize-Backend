@@ -2,14 +2,14 @@ const getPlatformFeePercentage = () => {
   const raw = Number(
     process.env.SHORTLET_PLATFORM_FEE_PERCENTAGE ||
     process.env.PAYSTACK_COMMISSION_PERCENTAGE ||
-    "15"
+    "8"
   );
 
   if (Number.isFinite(raw) && raw >= 0 && raw <= 100) {
     return raw;
   }
 
-  return 15;
+  return 8;
 };
 
 export const calculateShortletPayment = ({ price_per_night = 0, nights = 0, caution_fee = 0, platformFeePercentage = getPlatformFeePercentage() } = {}) => {

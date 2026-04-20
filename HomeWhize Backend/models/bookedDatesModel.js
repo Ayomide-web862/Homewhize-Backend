@@ -9,12 +9,32 @@ export const createBookedDates = async (property_id, booking_id, check_in, check
     dates.push(date.toISOString().slice(0, 10));
   }
 
-  if (dates.length === 0) return;
+  if (dates.length === 0) {
+    console.warn(`No dates to book for booking ${booking_id}`);
+    return;
+  }
 
-  const values = dates.map(date => `(${property_id}, ${booking_id}, '${date}')`).join(', ');
+  // Use parameterized bulk insert
+  const values = dates.map(() => '(?, ?, ?)').join(', ');
+  const params = [];
+  dates.forEach(date => {
+    params.push(property_id, booking_id, date);
+  });
+
   const sql = `INSERT INTO booked_dates (property_id, booking_id, booked_date) VALUES ${values}`;
 
-  return db.execute(sql);
+  try {
+    const result = await db.execute(sql, params);
+    console.log(`Created ${dates.length} booked dates for booking ${booking_id}`);
+    return result;
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      console.error(`Duplicate booked dates conflict for booking ${booking_id}:`, error.message);
+      throw new Error('Booking dates conflict with existing reservations');
+    }
+    console.error(`Failed to create booked dates for booking ${booking_id}:`, error);
+    throw error;
+  }
 };
 
 export const getBookedDatesForProperty = async (property_id, start_date = null, end_date = null) => {

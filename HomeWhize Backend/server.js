@@ -51,6 +51,7 @@ console.log('DB_HOST present:', !!process.env.DB_HOST);
 console.log('DB_NAME present:', !!process.env.DB_NAME);
 console.log('DB_USER present:', !!process.env.DB_USER);
 console.log('JWT_SECRET present:', !!process.env.JWT_SECRET);
+console.log('GOOGLE_CLIENT_ID present:', !!process.env.GOOGLE_CLIENT_ID || !!process.env.VITE_GOOGLE_CLIENT_ID);
 console.log('PAYSTACK_SECRET_KEY present:', !!process.env.PAYSTACK_SECRET_KEY);
 console.log('EMAIL_USER present:', !!process.env.EMAIL_USER);
 console.log('EMAIL_PASS present:', !!process.env.EMAIL_PASS);

@@ -1,6 +1,5 @@
 import express from "express";
 import { protect, roleMiddleware } from "../middleware/authMiddleware.js";
-
 import {
   createAdmin,
   getAllAdmins,
@@ -22,11 +21,10 @@ router.post(
 router.post(
   "/create-owner",
   protect,
-  roleMiddleware("superadmin", "master", "admin"),
+  roleMiddleware("superadmin", "master"),
   createOwner
 );
 
-// Create user + provider atomically (preferred over two-step create)
 router.post(
   "/create-provider",
   protect,

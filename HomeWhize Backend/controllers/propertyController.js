@@ -30,23 +30,71 @@ export const addProperty = async (req, res) => {
       longitude
     } = req.body;
 
-    const files = req.files || [];
+    console.log('[addProperty] Request received for property:', name);
+    console.log('[addProperty] req.files structure:', req.files ? Object.keys(req.files) : 'NO FILES');
+    console.log('[addProperty] Total files:', req.files ? Object.values(req.files).flat().length : 0);
+
+    // Handle multer file structure - files can be under 'images' or 'images[]'
+    let filesArray = [];
+    if (req.files) {
+      filesArray = req.files.images || req.files['images[]'] || [];
+    }
+    
+    console.log('[addProperty] Resolved filesArray length:', filesArray.length);
+
     const adminId = req.user && req.user.id ? req.user.id : null;
     const adminName = req.user && req.user.name ? req.user.name : null;
     const adminEmail = req.user && req.user.email ? req.user.email : null;
 
-    // Upload images if present
+    // Upload images to Cloudinary with timeout and retry
     let imageUrls = [];
-    if (files && files.length) {
-      const uploadPromises = files.map((file) =>
-        new Promise((resolve, reject) => {
-          cloudinary.uploader.upload_stream({ folder: "properties" }, (error, result) => {
-            if (error) return reject(error);
-            resolve(result.secure_url);
-          }).end(file.buffer);
-        })
-      );
-      imageUrls = await Promise.all(uploadPromises);
+    if (filesArray && filesArray.length) {
+      console.log('[addProperty] Starting Cloudinary uploads for', filesArray.length, 'files');
+      
+      const uploadWithRetry = (file, idx, maxRetries = 2) => {
+        return new Promise((resolve, reject) => {
+          const attemptUpload = (attempt = 0) => {
+            const uploadTimeout = setTimeout(() => {
+              console.warn(`[addProperty] Upload attempt ${attempt + 1} timeout for file ${idx + 1}`);
+              reject(new Error(`Upload timeout for file ${idx + 1} after ${attempt + 1} attempt(s)`));
+            }, 60000); // 60 second timeout per attempt
+
+            cloudinary.uploader.upload_stream(
+              { folder: "properties", timeout: 60000 },
+              (error, result) => {
+                clearTimeout(uploadTimeout);
+
+                if (error) {
+                  console.error(`[addProperty] Cloudinary upload failed for file ${idx + 1} (attempt ${attempt + 1}):`, error.message);
+                  if (attempt < maxRetries) {
+                    console.log(`[addProperty] Retrying file ${idx + 1}... (attempt ${attempt + 2}/${maxRetries + 1})`);
+                    setTimeout(() => attemptUpload(attempt + 1), 2000); // Wait 2s before retry
+                  } else {
+                    reject(error);
+                  }
+                } else {
+                  console.log(`[addProperty] Cloudinary upload successful for file ${idx + 1}:`, result.secure_url.substring(0, 50) + '...');
+                  resolve(result.secure_url);
+                }
+              }
+            ).end(file.buffer);
+          };
+
+          attemptUpload();
+        });
+      };
+
+      const uploadPromises = filesArray.map((file, idx) => uploadWithRetry(file, idx));
+      
+      try {
+        imageUrls = await Promise.all(uploadPromises);
+        console.log('[addProperty] All Cloudinary uploads complete. URLs:', imageUrls.length);
+      } catch (uploadError) {
+        console.error('[addProperty] Image upload failed:', uploadError.message);
+        return res.status(400).json({ message: 'Image upload failed: ' + uploadError.message });
+      }
+    } else {
+      console.log('[addProperty] No files to upload');
     }
 
     const insertSql = `
@@ -82,24 +130,46 @@ export const addProperty = async (req, res) => {
     const slug = `${slugify(name)}-${propertyId}`;
     try {
       await db.execute("UPDATE properties SET slug = ? WHERE id = ?", [slug, propertyId]);
+      console.log('[addProperty] Slug persisted:', slug);
     } catch (e) {
       // If the slug column doesn't exist yet (older deployments), ignore.
       console.warn("Unable to persist property slug:", e && e.message ? e.message : e);
     }
 
     if (imageUrls && imageUrls.length) {
+      console.log('[addProperty] Inserting', imageUrls.length, 'images for property', propertyId);
       const imageSql = `INSERT INTO property_images (property_id, image_url) VALUES ?`;
       const imageValues = imageUrls.map((u) => [propertyId, u]);
-      await new Promise((resolve, reject) => db.query(imageSql, [imageValues], (e) => (e ? reject(e) : resolve())));
+      
+      try {
+        await new Promise((resolve, reject) => {
+          db.query(imageSql, [imageValues], (e) => {
+            if (e) {
+              console.error('[addProperty] Database insert failed:', e.message);
+              reject(e);
+            } else {
+              console.log('[addProperty] Database insert successful for', imageValues.length, 'images');
+              resolve();
+            }
+          });
+        });
+      } catch (dbErr) {
+        console.error('[addProperty] Image insertion failed:', dbErr.message);
+        throw dbErr;
+      }
+    } else {
+      console.log('[addProperty] No images to insert');
     }
 
     // Invalidate public properties cache
     try { await cache.del('public:properties'); } catch (e) { /* ignore */ }
 
+    console.log('[addProperty] Success! Property created with ID:', propertyId, 'Images uploaded:', imageUrls.length);
     res.status(201).json({ message: 'Property added successfully', id: propertyId });
   } catch (error) {
-    console.error('Add property error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('[addProperty] Error creating property:', error.message);
+    console.error('[addProperty] Error stack:', error.stack);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
 
@@ -188,6 +258,46 @@ export const getAllPropertiesForSuperAdmin = (req, res) => {
       });
     });
   });
+};
+
+/* GET PUBLIC PROPERTIES COUNT - LIGHTWEIGHT ENDPOINT */
+export const getPublicPropertiesCount = async (req, res) => {
+  try {
+    const cacheKey = "public:properties:count";
+    const TTL_MS = parseInt(process.env.PUBLIC_PROPERTIES_TTL_MS || String(30 * 1000), 10);
+
+    // Check cache first (fast)
+    const cached = cache.get ? await cache.get(cacheKey) : null;
+    if (cached) {
+      res.setHeader('Cache-Control', `public, max-age=${Math.ceil(TTL_MS/1000)}`);
+      return res.json(cached);
+    }
+
+    // Simple COUNT query - very fast
+    const sql = `
+      SELECT COUNT(*) as count
+      FROM properties
+      WHERE LOWER(status) IN ('available', 'booked')
+    `;
+
+    db.query(sql, [], async (err, results) => {
+      if (err) {
+        console.error('Get public properties count error:', err);
+        return res.status(500).json({ message: 'Server error' });
+      }
+
+      const count = results[0]?.count || 0;
+      const response = { count };
+
+      try { await cache.set(cacheKey, response, TTL_MS); } catch (e) { /* ignore */ }
+
+      res.setHeader('Cache-Control', `public, max-age=${Math.ceil(TTL_MS/1000)}`);
+      res.json(response);
+    });
+  } catch (error) {
+    console.error('Get public properties count error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
 };
 
 /* PUBLIC PROPERTIES */
