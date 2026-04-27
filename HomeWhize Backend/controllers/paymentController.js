@@ -116,7 +116,7 @@ export const initializeBookingPayment = async (req, res) => {
       return res.status(409).json({ message: 'Selected dates are already booked' });
     }
 
-    const booking_reference = `PADUP-${crypto
+    const booking_reference = `HOMEWHIZE-${crypto
       .randomBytes(4)
       .toString("hex")
       .toUpperCase()}`;
@@ -349,7 +349,7 @@ export const paymentCallback = async (req, res) => {
 
     if (!verifyData.status || verifyData.data.status !== 'success') {
       console.error(`[CALLBACK] Payment verification failed for ${reference}:`, verifyData);
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/failed?reference=${reference}&error=verification_failed`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment/failed?reference=${reference}&error=verification_failed`);
     }
 
     // Update transaction status if not already updated by webhook
@@ -377,7 +377,7 @@ export const paymentCallback = async (req, res) => {
     }
 
     // Redirect to success page
-    const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/success?reference=${reference}`;
+    const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment/verify?reference=${reference}`;
     console.log(`[CALLBACK] Redirecting to success: ${successUrl}`);
     return res.redirect(successUrl);
 

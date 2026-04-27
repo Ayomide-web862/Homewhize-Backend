@@ -127,14 +127,13 @@ export const createProvider = async (req, res) => {
 
     // Force role to 'cleaner' for provider creation - this endpoint is for service providers only
     const assignedRole = 'cleaner';
-    connection = await new Promise((resolve, reject) => db.getConnection((err, conn) => err ? reject(err) : resolve(conn)));
-    const connP = connection.promise();
-    await connP.beginTransaction();
+    connection = await db.getConnection();
+    await connection.beginTransaction();
 
     // Check email exists
-    const [existing] = await connP.execute('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
+    const [existing] = await connection.execute('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
     if (existing && existing.length > 0) {
-      await connP.rollback();
+      await connection.rollback();
       connection.release();
       return res.status(400).json({ message: 'Email already exists' });
     }
@@ -143,7 +142,7 @@ export const createProvider = async (req, res) => {
     const hashed = await bcrypt.hash(tempPassword, 10);
 
     // Create user
-    const [userRes] = await connP.execute(
+    const [userRes] = await connection.execute(
       'INSERT INTO users (name, email, password, role, provider) VALUES (?, ?, ?, ?, ?)',
       [company_name, email, hashed, assignedRole, 'local']
     );
@@ -154,23 +153,23 @@ export const createProvider = async (req, res) => {
     let slug = slugBase;
     let attempts = 0;
     while (attempts < 5) {
-      const [existing] = await connP.execute('SELECT id FROM providers WHERE slug = ? LIMIT 1', [slug]);
+      const [existing] = await connection.execute('SELECT id FROM providers WHERE slug = ? LIMIT 1', [slug]);
       if (!existing || existing.length === 0) break;
       slug = `${slugBase}-${Math.floor(1000 + Math.random() * 9000)}`;
       attempts++;
     }
 
-    const [providerRes] = await connP.execute(
+    const [providerRes] = await connection.execute(
       `INSERT INTO providers (company_name, slug, email, phone, address, categories, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [company_name, slug, email, phone || null, address || null, categories || '', userId]
     );
     const providerId = providerRes.insertId;
 
     // Fetch the created provider to return a consistent object
-    const [createdRows] = await connP.execute('SELECT * FROM providers WHERE id = ? LIMIT 1', [providerId]);
+    const [createdRows] = await connection.execute('SELECT * FROM providers WHERE id = ? LIMIT 1', [providerId]);
     const createdProvider = createdRows && createdRows[0] ? createdRows[0] : null;
 
-    await connP.commit();
+    await connection.commit();
     connection.release();
 
     // Send emails after commit (non-blocking)

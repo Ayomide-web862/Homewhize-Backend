@@ -144,13 +144,12 @@ export const deleteProviderHandler = async (req, res, next) => {
     if (!user) return res.status(401).json({ message: 'Not authenticated' });
 
     // Start transaction
-    connection = await new Promise((resolve, reject) => db.getConnection((err, conn) => err ? reject(err) : resolve(conn)));
-    const connP = connection.promise();
-    await connP.beginTransaction();
+    connection = await db.getConnection();
+    await connection.beginTransaction();
 
-    const [provRows] = await connP.execute(`SELECT * FROM providers WHERE id = ? LIMIT 1`, [id]);
+    const [provRows] = await connection.execute(`SELECT * FROM providers WHERE id = ? LIMIT 1`, [id]);
     if (!provRows || provRows.length === 0) {
-      await connP.rollback();
+      await connection.rollback();
       connection.release();
       return res.status(404).json({ message: 'Provider not found' });
     }
@@ -160,20 +159,20 @@ export const deleteProviderHandler = async (req, res, next) => {
     // Only superadmin/master or owner can delete
     const allowed = ['superadmin', 'master'];
     if (!allowed.includes(user.role) && provider.user_id !== user.id) {
-      await connP.rollback();
+      await connection.rollback();
       connection.release();
       return res.status(403).json({ message: 'Forbidden' });
     }
 
     // Delete provider
-    await connP.execute(`DELETE FROM providers WHERE id = ?`, [id]);
+    await connection.execute(`DELETE FROM providers WHERE id = ?`, [id]);
 
     // If provider had linked user, delete user as well
     if (provider.user_id) {
-      await connP.execute(`DELETE FROM users WHERE id = ?`, [provider.user_id]);
+      await connection.execute(`DELETE FROM users WHERE id = ?`, [provider.user_id]);
     }
 
-    await connP.commit();
+    await connection.commit();
     await invalidateProviderCaches({ slug: provider.slug, categories: provider.categories }).catch(() => {});
     connection.release();
     res.json({ message: 'Provider and linked user deleted' });

@@ -131,9 +131,9 @@ export const finalizeShortletBooking = async (params) => {
     }
 
     // Verify Paystack amount matches expected amount
-    if (paystackPayload && paystackPayload.amount) {
+    if (paystackData && paystackData.amount) {
       const expectedAmount = Math.round(Number(snapshot.total_amount || 0) * 100); // Convert to kobo
-      const actualAmount = Number(paystackPayload.amount);
+      const actualAmount = Number(paystackData.amount);
       if (expectedAmount !== actualAmount) {
         throw new Error(`Amount mismatch: expected ${expectedAmount} kobo, got ${actualAmount} kobo`);
       }

@@ -64,7 +64,7 @@ export const createNewBooking = async (req, res) => {
       return res.status(409).json({ message: 'Selected dates are already booked' });
     }
 
-    const booking_reference = `PADUP-${crypto
+    const booking_reference = `HOMEWHIZE-${crypto
       .randomBytes(4)
       .toString("hex")
       .toUpperCase()}`;

@@ -1375,7 +1375,7 @@ function getBookingConfirmationTemplate(booking) {
               <span class="reference-highlight">Booking Reference: ${booking_reference}</span>
             </div>
             <div class="booking-details">
-              <h3 style="margin-top: 0; color: #0F4D3C;">📅 Booking Details</h3>
+              <h3 style="margin-top: 0; color: #0F4D3C;"> Booking Details</h3>
               <div class="detail-row"><span><strong>Check-in:</strong></span><span>${checkInDate}</span></div>
               <div class="detail-row"><span><strong>Check-out:</strong></span><span>${checkOutDate}</span></div>
               <div class="detail-row"><span><strong>Duration:</strong></span><span>${nights} night${nights > 1 ? 's' : ''}</span></div>
@@ -1468,7 +1468,7 @@ function getGuestBookingConfirmationTemplate(booking) {
             </div>
 
             <div class="booking-details">
-              <h3 style="margin-top: 0; color: #0F4D3C;">📅 Booking Details</h3>
+              <h3 style="margin-top: 0; color: #0F4D3C;"> Booking Details</h3>
               <div class="detail-row"><span><strong>Check-in:</strong></span><span>${checkInDate}</span></div>
               <div class="detail-row"><span><strong>Check-out:</strong></span><span>${checkOutDate}</span></div>
               <div class="detail-row"><span><strong>Duration:</strong></span><span>${nights} night${nights > 1 ? 's' : ''}</span></div>
@@ -1480,7 +1480,7 @@ function getGuestBookingConfirmationTemplate(booking) {
             </div>
 
             <div class="access-code">
-              🔐 <strong>Access Code: ${access_code}</strong><br />
+               <strong>Access Code: ${access_code}</strong><br />
               <small>Please present this code upon arrival for verification</small>
             </div>
 
@@ -1560,7 +1560,7 @@ function getOwnerBookingNotificationTemplate(booking, property) {
           </div>
           <div class="content">
             <div class="notification-message">
-              📅 <strong>New Booking Confirmed</strong><br />
+               <strong>New Booking Confirmed</strong><br />
               A guest has successfully booked your property and completed payment.
             </div>
 
@@ -1569,7 +1569,7 @@ function getOwnerBookingNotificationTemplate(booking, property) {
             </div>
 
             <div class="booking-details">
-              <h3 style="margin-top: 0; color: #0F4D3C;">📅 Booking Details</h3>
+              <h3 style="margin-top: 0; color: #0F4D3C;"> Booking Details</h3>
               <div class="detail-row"><span><strong>Property:</strong></span><span>${property.name}</span></div>
               <div class="detail-row"><span><strong>Check-in:</strong></span><span>${checkInDate}</span></div>
               <div class="detail-row"><span><strong>Check-out:</strong></span><span>${checkOutDate}</span></div>
@@ -1578,14 +1578,14 @@ function getOwnerBookingNotificationTemplate(booking, property) {
             </div>
 
             <div class="guest-info">
-              <h3 style="margin-top: 0; color: #0F4D3C;">👤 Guest Information</h3>
+              <h3 style="margin-top: 0; color: #0F4D3C;"> Guest Information</h3>
               <div class="detail-row"><span><strong>Name:</strong></span><span>${full_name}</span></div>
               <div class="detail-row"><span><strong>Email:</strong></span><span>${email}</span></div>
               <div class="detail-row"><span><strong>Phone:</strong></span><span>${phone}</span></div>
             </div>
 
             <div class="access-code">
-              🔐 <strong>Access Code: ${access_code}</strong><br />
+               <strong>Access Code: ${access_code}</strong><br />
               <small>The guest will present this code upon arrival for verification</small>
             </div>
 

@@ -41,7 +41,7 @@ const promisePool = pool.promise();
 const db = {
   query: (...args) => pool.query(...args),
   execute: (...args) => promisePool.execute(...args),
-  getConnection: (...args) => pool.getConnection(...args),
+  getConnection: (...args) => promisePool.getConnection(...args),
   // Close the underlying pool (useful for graceful shutdown)
   closePool: () => new Promise((resolve, reject) => {
     pool.end((err) => {
