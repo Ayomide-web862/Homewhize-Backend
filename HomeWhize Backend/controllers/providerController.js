@@ -1,5 +1,29 @@
 import { createProvider, getProviderById, getProviders, getProviderBySlug, invalidateProviderCaches } from "../models/providerModel.js";
 import db from "../config/db.js";
+import cloudinary from "../config/cloudinary.js";
+
+// Upload helper with better error handling
+const uploadToCloudinary = async (file) => {
+  if (!file) {
+    throw new Error("File is missing");
+  }
+
+  try {
+    const result = await cloudinary.uploader.upload(
+      `data:${file.mimetype};base64,${file.buffer.toString("base64")}`,
+      {
+        folder: "service_images",
+        resource_type: "auto", // Auto-detect resource type (image, raw, etc.)
+        type: "upload", // Ensure public upload, not private
+        quality: "auto"
+      }
+    );
+    return result.secure_url;
+  } catch (err) {
+    console.error("Cloudinary upload error:", err);
+    throw new Error(`Failed to upload file: ${err.message}`);
+  }
+};
 
 // Create service for a provider
 export const createServiceForProvider = async (req, res, next) => {
@@ -22,13 +46,27 @@ export const createServiceForProvider = async (req, res, next) => {
       return res.status(403).json({ message: 'Forbidden: not owner' });
     }
 
-    const { title, category, description, price, estimatedDuration, images } = req.body;
+    const { title, category, description, price, estimatedDuration } = req.body;
     if (!title || typeof title !== 'string' || title.trim().length === 0) {
       return res.status(400).json({ message: 'title is required' });
     }
 
+    // Handle image uploads
+    let imageUrls = [];
+    if (req.files && req.files.length > 0) {
+      try {
+        for (const file of req.files) {
+          const url = await uploadToCloudinary(file);
+          imageUrls.push(url);
+        }
+      } catch (uploadError) {
+        console.error('Image upload failed:', uploadError);
+        return res.status(500).json({ message: 'Failed to upload images' });
+      }
+    }
+
     const est = estimatedDuration || null;
-    const imgs = Array.isArray(images) ? images.join(',') : (images || null);
+    const imgs = imageUrls.length > 0 ? imageUrls.join(',') : null;
     const priceNum = price === undefined || price === null ? 0 : Number(String(price).replace(/,/g, ''));
     if (isNaN(priceNum) || priceNum < 0) return res.status(400).json({ message: 'Invalid price' });
 
@@ -187,6 +225,36 @@ export const deleteProviderHandler = async (req, res, next) => {
   }
 };
 
+export const deleteServiceForProvider = async (req, res, next) => {
+  try {
+    const providerId = Number(req.params.id);
+    const serviceId = Number(req.params.serviceId);
+    if (!providerId || !serviceId) return res.status(400).json({ message: 'Invalid provider or service id' });
+
+    const user = req.user;
+    if (!user) return res.status(401).json({ message: 'Not authenticated' });
+
+    const [provRows] = await db.execute(`SELECT * FROM providers WHERE id = ? LIMIT 1`, [providerId]);
+    if (!provRows || provRows.length === 0) return res.status(404).json({ message: 'Provider not found' });
+    const provider = provRows[0];
+
+    const [serviceRows] = await db.execute(`SELECT * FROM services WHERE id = ? AND provider_id = ? LIMIT 1`, [serviceId, providerId]);
+    if (!serviceRows || serviceRows.length === 0) return res.status(404).json({ message: 'Service not found' });
+
+    const allowedAdminRoles = ['admin', 'superadmin', 'master'];
+    if (provider.user_id !== user.id && !allowedAdminRoles.includes(user.role)) {
+      return res.status(403).json({ message: 'Forbidden: not owner or admin' });
+    }
+
+    await db.execute(`DELETE FROM services WHERE id = ?`, [serviceId]);
+    await invalidateProviderCaches({ slug: provider.slug, categories: provider.categories }).catch(() => {});
+
+    res.json({ message: 'Service deleted' });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   createProviderHandler,
   getProviderHandler,
@@ -194,5 +262,6 @@ export default {
   listProvidersHandler,
   createServiceForProvider,
   getMyProviderHandler,
+  deleteServiceForProvider,
   deleteProviderHandler,
 };
