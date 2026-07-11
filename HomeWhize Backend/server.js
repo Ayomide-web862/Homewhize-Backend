@@ -40,8 +40,7 @@ process.on('unhandledRejection', (reason, promise) => {
   }
   process.exit(1);
 });
-
-dotenv.config({ quiet: true });
+ 
 
 // DEBUG: startup diagnostics
 console.log('=== HOMEWHIZE BACKEND STARTUP ===');
@@ -91,6 +90,25 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Load environment files relative to this file
+const baseEnvPath = path.resolve(__dirname, '.env');
+const resultEnv = dotenv.config({ path: baseEnvPath, override: false });
+if (resultEnv.error) {
+  console.warn('[ENV] .env file not loaded:', resultEnv.error.message);
+} else {
+  console.log('[ENV] Loaded .env from', baseEnvPath);
+}
+
+if (process.env.NODE_ENV === 'production') {
+  const prodEnvPath = path.resolve(__dirname, '.env.production');
+  const resultProdEnv = dotenv.config({ path: prodEnvPath, override: true });
+  if (resultProdEnv.error) {
+    console.warn('[ENV] .env.production file not loaded:', resultProdEnv.error.message);
+  } else {
+    console.log('[ENV] Loaded .env.production from', prodEnvPath);
+  }
+}
+
 // When running behind a proxy (e.g., nginx, Heroku) trust first proxy
 // Make proxy trust configurable for Passenger/nginx setups
 app.set("trust proxy", process.env.TRUST_PROXY || 1);
@@ -120,23 +138,47 @@ app.use(verifyCsrf);
 
 // CORS - allow only known origins, support credentials and preflight
 // Allowed origins can be configured via FRONTEND_URLS (comma-separated) in env
-const allowedOriginsEnv =
-  process.env.FRONTEND_URLS ||
-  process.env.FRONTEND_URL ||
-  "https://homewhize.com,http://homewhize.com,http://localhost:5173";
+const defaultOrigins = [
+  "https://homewhize.com",
+  "https://www.homewhize.com",
+  "http://homewhize.com",
+  "http://localhost:5173",
+];
 
-const allowedOrigins = allowedOriginsEnv
-  .split(",")
-  .map((s) => s.trim());
+const allowedOriginsEnv = process.env.FRONTEND_URLS || process.env.FRONTEND_URL || defaultOrigins.join(",");
+
+const allowedOrigins = Array.from(
+  new Set(
+    allowedOriginsEnv
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .concat(defaultOrigins)
+  )
+);
+
+const originMatchers = [
+  ...allowedOrigins,
+  /^https:\/\/([a-z0-9-]+\.)*homewhize\.com$/,
+];
+
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  return originMatchers.some((allowed) => {
+    if (typeof allowed === 'string') return allowed === origin;
+    return allowed.test(origin);
+  });
+};
 
 // Log CORS configuration on startup
 console.log("[CORS] Allowed origins:", allowedOrigins);
+console.log("[CORS] Origin matcher enabled for *.homewhize.com");
 
 // EXPLICIT CORS headers middleware - ensures headers are set even behind proxies
 // This runs BEFORE express-cors to ensure compatibility with cPanel proxy setups
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  const isAllowed = !origin || allowedOrigins.includes(origin);
+  const isAllowed = isOriginAllowed(origin);
   
   if (isAllowed) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
@@ -169,15 +211,10 @@ app.use((req, res, next) => {
 // CORS configuration - applied globally before any routes
 const corsOptions = {
   origin: (origin, callback) => {
-    // Allow requests without origin (server-to-server, direct hits)
-    if (!origin) return callback(null, true);
-
-    // Check if origin is in allowed list
-    if (allowedOrigins.includes(origin)) {
+    if (isOriginAllowed(origin)) {
       return callback(null, true);
     }
 
-    // In development, be more permissive
     if (process.env.NODE_ENV !== 'production') {
       console.warn("[CORS] Warning: Request from unallowed origin:", origin);
       return callback(null, true);

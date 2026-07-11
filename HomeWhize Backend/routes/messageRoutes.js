@@ -41,6 +41,7 @@ router.use(cors({
   origin: (origin, callback) => {
     const allowedOrigins = [
       "https://homewhize.com",
+      "https://www.homewhize.com",
       "http://homewhize.com",
       "http://localhost:5173"
     ];
