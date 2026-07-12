@@ -5,6 +5,7 @@ import { protect } from "../middleware/authMiddleware.js";
 import {
   createPost,
   getPosts,
+  deletePost,
   addComment,
   getComments,
   toggleLike
@@ -14,6 +15,7 @@ const router = express.Router();
 
 router.post("/", protect, upload.array("images", 5), createPost);
 router.get("/", getPosts);
+router.delete("/:postId", protect, deletePost);
 router.post("/:postId/comments", protect, addComment);
 router.get("/:postId/comments", getComments);
 router.post("/:postId/like", protect, toggleLike);

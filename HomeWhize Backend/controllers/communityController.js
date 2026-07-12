@@ -121,6 +121,37 @@ export const getPosts = async (req, res) => {
   });
 };
 
+/* ===================== DELETE POST ===================== */
+export const deletePost = async (req, res) => {
+  const { postId } = req.params;
+  const { id, role } = req.user;
+
+  try {
+    const [rows] = await db.execute(
+      "SELECT user_id FROM community_posts WHERE id = ? LIMIT 1",
+      [postId]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    const isOwner = Number(rows[0].user_id) === Number(id);
+    const isSuperAdmin = String(role || "").toLowerCase() === "superadmin";
+
+    if (!isOwner && !isSuperAdmin) {
+      return res.status(403).json({ message: "Only superadmins can delete other users' posts" });
+    }
+
+    await db.execute("DELETE FROM community_posts WHERE id = ?", [postId]);
+    await clearCommunityPostsCache();
+    return res.json({ message: "Post deleted" });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Failed to delete post" });
+  }
+};
+
 /* ===================== COMMENTS ===================== */
 export const addComment = (req, res) => {
   const { postId } = req.params;
