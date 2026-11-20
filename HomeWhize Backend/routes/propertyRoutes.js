@@ -41,6 +41,7 @@ router.put(
   "/:id",
   protect,
   roleMiddleware("admin", "superadmin", "master"),
+  upload.fields([{ name: "images", maxCount: 10 }, { name: "images[]", maxCount: 10 }]),
   updateProperty
 );
 

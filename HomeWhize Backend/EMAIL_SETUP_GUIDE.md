@@ -4,7 +4,7 @@
 
 Gmail no longer allows "less secure app" login. You must use one of these methods:
 
-### ✅ **Recommended: App Password (Easiest)**
+###  **Recommended: App Password (Easiest)**
 
 1. **Enable 2-Step Verification** on your Gmail account:
    - Go to [myaccount.google.com/security](https://myaccount.google.com/security)
@@ -28,7 +28,7 @@ EMAIL_PASS=xxxx xxxx xxxx xxxx
 ```bash
 npm run dev
 ```
-Check logs for: `✅ Email transporter configured: gmail`
+Check logs for: ` Email transporter configured: gmail`
 
 ---
 
@@ -82,7 +82,7 @@ EMAIL_SECURE=false
 - Try regenerating the App Password
 
 ### Emails still not sending?
-- Check backend logs for `✅ Email transporter configured`
+- Check backend logs for ` Email transporter configured`
 - Look for error messages in the console
 - Uncomment `verifyEmailConnection()` call in `server.js` to test connection on startup
 
@@ -123,12 +123,12 @@ Content-Type: application/json
 ```
 
 - Check `your-test-email@gmail.com` for signup acknowledgment email
-- Check backend logs for: `✅ Signup email sent successfully to ...`
+- Check backend logs for: ` Signup email sent successfully to ...`
 
 ---
 
 ## Notes
 
 - Emails are **non-blocking**: if sending fails, the operation (registration, password change, etc.) still succeeds
-- Backend logs show `✅` (success), `⚠️` (warning), or `❌` (error) for each email attempt
+- Backend logs show `` (success), `` (warning), or `` (error) for each email attempt
 - No need to restart backend for `.env` changes (email config reloads on demand)

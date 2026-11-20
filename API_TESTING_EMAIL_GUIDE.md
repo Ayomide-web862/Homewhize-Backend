@@ -566,9 +566,9 @@ curl -X POST http://localhost:5000/api/auth/register \
 
 # 3. Check your email inbox for welcome email
 
-# Done! ✅
+# Done! 
 ```
 
 ---
 
-Happy testing! 🚀
+Happy testing! 

@@ -11,6 +11,37 @@ const slugify = (text) => {
     .replace(/(^-|-$)/g, "");
 };
 
+const uploadPropertyImage = (file) =>
+  new Promise((resolve, reject) => {
+    cloudinary.uploader.upload_stream(
+      { folder: "properties", timeout: 60000 },
+      (error, result) => {
+        if (error) return reject(error);
+        if (!result?.secure_url) return reject(new Error("Cloudinary returned no image URL"));
+        resolve(result.secure_url);
+      }
+    ).end(file.buffer);
+  });
+
+const getCloudinaryPublicId = (url) => {
+  const marker = "/upload/";
+  const uploadIndex = String(url || "").indexOf(marker);
+  if (uploadIndex === -1) return null;
+
+  const publicPath = String(url)
+    .slice(uploadIndex + marker.length)
+    .split("/")
+    .filter((segment) => !/^v\d+$/.test(segment))
+    .join("/");
+  return publicPath.replace(/\.[^/.]+$/, "") || null;
+};
+
+const removeCloudinaryImage = async (url) => {
+  const publicId = getCloudinaryPublicId(url);
+  if (!publicId) return;
+  await cloudinary.uploader.destroy(publicId);
+};
+
 /* ADD PROPERTY */
 export const addProperty = async (req, res) => {
   try {
@@ -657,82 +688,235 @@ export const getPropertyAvailability = async (req, res) => {
 /* UPDATE PROPERTY */
 export const updateProperty = async (req, res) => {
   const { id } = req.params;
-  const {
-    name,
-    address,
-    location,
-    price,
-    cautionFee,
-    propertyType,
-    bedrooms,
-    bathrooms,
-    maxGuests,
-    status,
-    description,
-    latitude,
-    longitude,
-  } = req.body;
-
-  const adminId = req.user && req.user.id ? req.user.id : null;
-  const adminName = req.user && req.user.name ? req.user.name : null;
-  const adminEmail = req.user && req.user.email ? req.user.email : null;
-  const role = req.user && req.user.role ? req.user.role : null;
+  const role = req.user?.role;
+  const adminId = req.user?.id;
+  const uploadedFiles = [
+    ...(req.files?.images || []),
+    ...(req.files?.["images[]"] || []),
+  ];
+  const hasKeepImages = Object.prototype.hasOwnProperty.call(req.body, "keepImages");
+  let keepImages;
+  let uploadedUrls = [];
+  let connection;
 
   try {
-    if (role === "admin") {
-      const [rows] = await db.execute("SELECT admin_id FROM properties WHERE id = ?", [id]);
-      if (!rows || rows.length === 0) return res.status(404).json({ message: "Property not found" });
-      if (rows[0].admin_id !== adminId) return res.status(403).json({ message: "Not authorized" });
+    if (!/^\d+$/.test(String(id))) {
+      return res.status(400).json({ message: "Invalid property ID" });
     }
 
-    const [result] = await db.execute(
-      `UPDATE properties SET
-        name = COALESCE(?, name),
-        address = COALESCE(?, address),
-        location = COALESCE(?, location),
-        price = COALESCE(?, price),
-        caution_fee = COALESCE(?, caution_fee),
-        property_type = COALESCE(?, property_type),
-        bedrooms = COALESCE(?, bedrooms),
-        bathrooms = COALESCE(?, bathrooms),
-        max_guests = COALESCE(?, max_guests),
-        status = COALESCE(?, status),
-        description = COALESCE(?, description),
-        latitude = COALESCE(?, latitude),
-        longitude = COALESCE(?, longitude),
-        admin_id = COALESCE(?, admin_id),
-        admin_name = COALESCE(?, admin_name),
-        admin_email = COALESCE(?, admin_email)
-      WHERE id = ?`,
-      [
-        name || null,
-        address || null,
-        location || null,
-        price ? Number(price) : null,
-        cautionFee ? Number(cautionFee) : null,
-        propertyType || null,
-        bedrooms ? Number(bedrooms) : null,
-        bathrooms ? Number(bathrooms) : null,
-        maxGuests ? Number(maxGuests) : null,
-        status || null,
-        description || null,
-        latitude || null,
-        longitude || null,
-        role === "admin" ? adminId : null,
-        role === "admin" ? adminName : null,
-        role === "admin" ? adminEmail : null,
-        id,
-      ]
+    if (uploadedFiles.length > 10) {
+      return res.status(400).json({ message: "A property can have at most 10 images" });
+    }
+
+    if (hasKeepImages) {
+      try {
+        keepImages = JSON.parse(req.body.keepImages);
+      } catch {
+        return res.status(400).json({ message: "Invalid image list" });
+      }
+      if (!Array.isArray(keepImages) || keepImages.some((url) => typeof url !== "string")) {
+        return res.status(400).json({ message: "Invalid image list" });
+      }
+    }
+
+    const [propertyRows] = await db.execute(
+      "SELECT id, admin_id FROM properties WHERE id = ?",
+      [id]
     );
+    if (!propertyRows.length) return res.status(404).json({ message: "Property not found" });
+    if (role === "admin" && Number(propertyRows[0].admin_id) !== Number(adminId)) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
 
-    if (result.affectedRows === 0) return res.status(404).json({ message: "Property not found" });
+    const [currentImageRows] = await db.execute(
+      "SELECT image_url FROM property_images WHERE property_id = ?",
+      [id]
+    );
+    const currentImages = currentImageRows.map((row) => row.image_url);
+    if (!hasKeepImages) keepImages = currentImages;
 
-    try { await cache.del('public:properties'); } catch (e) { /* ignore */ }
+    if (keepImages.some((url) => !currentImages.includes(url))) {
+      return res.status(400).json({ message: "Image list contains an image not attached to this property" });
+    }
+    if (keepImages.length + uploadedFiles.length > 10) {
+      return res.status(400).json({ message: "A property can have at most 10 images" });
+    }
 
-    res.json({ message: "Property updated successfully", id });
+    const hasField = (...names) => names.some((name) =>
+      Object.prototype.hasOwnProperty.call(req.body, name)
+    );
+    const fieldValue = (...names) => {
+      const name = names.find((key) => Object.prototype.hasOwnProperty.call(req.body, key));
+      return name ? req.body[name] : undefined;
+    };
+    const updates = [];
+    const values = [];
+    const addUpdate = (column, value) => {
+      updates.push(`${column} = ?`);
+      values.push(value);
+    };
+    const addText = (column, aliases, { required = false, nullable = false } = {}) => {
+      if (!hasField(...aliases)) return;
+      const value = fieldValue(...aliases);
+      if (value === "" && nullable) return addUpdate(column, null);
+      if (typeof value !== "string" || (required && !value.trim())) {
+        throw new Error(`${aliases[0]} must be a non-empty string`);
+      }
+      addUpdate(column, value.trim());
+    };
+    const addNumber = (column, aliases, { integer = false, nullable = false, min = 0, max = Infinity } = {}) => {
+      if (!hasField(...aliases)) return;
+      const rawValue = fieldValue(...aliases);
+      if ((rawValue === "" || rawValue === null) && nullable) return addUpdate(column, null);
+      const number = Number(rawValue);
+      if (!Number.isFinite(number) || number < min || number > max || (integer && !Number.isInteger(number))) {
+        throw new Error(`${aliases[0]} is invalid`);
+      }
+      addUpdate(column, number);
+    };
+
+    addText("name", ["name"], { required: true });
+    addText("address", ["address"], { required: true });
+    addText("location", ["location"], { required: true });
+    addNumber("price", ["price"]);
+    addNumber("caution_fee", ["cautionFee", "caution_fee"]);
+    addText("property_type", ["propertyType", "property_type"], { nullable: true });
+    addNumber("bedrooms", ["bedrooms"], { integer: true });
+    addNumber("bathrooms", ["bathrooms"], { integer: true });
+    addNumber("max_guests", ["maxGuests", "max_guests"], { integer: true });
+    addText("description", ["description"]);
+    addNumber("latitude", ["latitude"], { nullable: true, min: -90, max: 90 });
+    addNumber("longitude", ["longitude"], { nullable: true, min: -180, max: 180 });
+
+    if (hasField("status")) {
+      const status = String(fieldValue("status")).toLowerCase();
+      if (!["available", "booked"].includes(status)) {
+        return res.status(400).json({ message: "Status must be Available or Booked" });
+      }
+      addUpdate("status", status === "available" ? "Available" : "Booked");
+    }
+
+    if (updates.length === 0 && !hasKeepImages && uploadedFiles.length === 0) {
+      return res.status(400).json({ message: "No property changes were provided" });
+    }
+
+    if (uploadedFiles.length) {
+      const results = await Promise.allSettled(uploadedFiles.map(uploadPropertyImage));
+      uploadedUrls = results
+        .filter((result) => result.status === "fulfilled")
+        .map((result) => result.value);
+      const failedUpload = results.find((result) => result.status === "rejected");
+      if (failedUpload) {
+        await Promise.allSettled(uploadedUrls.map(removeCloudinaryImage));
+        return res.status(400).json({ message: `Image upload failed: ${failedUpload.reason.message}` });
+      }
+    }
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    const [lockedRows] = await connection.execute(
+      "SELECT id, admin_id FROM properties WHERE id = ? FOR UPDATE",
+      [id]
+    );
+    if (!lockedRows.length) {
+      await connection.rollback();
+      connection.release();
+      connection = null;
+      await Promise.allSettled(uploadedUrls.map(removeCloudinaryImage));
+      return res.status(404).json({ message: "Property not found" });
+    }
+    if (role === "admin" && Number(lockedRows[0].admin_id) !== Number(adminId)) {
+      await connection.rollback();
+      connection.release();
+      connection = null;
+      await Promise.allSettled(uploadedUrls.map(removeCloudinaryImage));
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    const [lockedImages] = await connection.execute(
+      "SELECT image_url FROM property_images WHERE property_id = ?",
+      [id]
+    );
+    const lockedImageUrls = lockedImages.map((row) => row.image_url);
+    const imagesChanged = lockedImageUrls.length !== currentImages.length
+      || currentImages.some((url) => !lockedImageUrls.includes(url));
+    if (imagesChanged || keepImages.some((url) => !lockedImageUrls.includes(url))) {
+      await connection.rollback();
+      connection.release();
+      connection = null;
+      await Promise.allSettled(uploadedUrls.map(removeCloudinaryImage));
+      return res.status(409).json({ message: "Property images changed. Reload and try again." });
+    }
+
+    if (hasField("name")) {
+      const [slugColumns] = await connection.execute(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = 'properties' AND column_name = 'slug' LIMIT 1`
+      );
+      if (slugColumns.length) {
+        updates.push("slug = ?");
+        values.push(`${slugify(fieldValue("name"))}-${id}`);
+      }
+    }
+
+    if (updates.length) {
+      await connection.execute(
+        `UPDATE properties SET ${updates.join(", ")} WHERE id = ?`,
+        [...values, id]
+      );
+    }
+
+    if (hasKeepImages || uploadedFiles.length) {
+      await connection.execute("DELETE FROM property_images WHERE property_id = ?", [id]);
+      const imageUrls = [...keepImages, ...uploadedUrls];
+      if (imageUrls.length) {
+        const placeholders = imageUrls.map(() => "(?, ?)").join(", ");
+        const imageValues = imageUrls.flatMap((url) => [id, url]);
+        await connection.execute(
+          `INSERT INTO property_images (property_id, image_url) VALUES ${placeholders}`,
+          imageValues
+        );
+      }
+    }
+
+    await connection.commit();
+    connection.release();
+    connection = null;
+
+    if (hasKeepImages || uploadedFiles.length) {
+      const removedImages = lockedImageUrls.filter((url) => !keepImages.includes(url));
+      const cleanupResults = await Promise.allSettled(removedImages.map(removeCloudinaryImage));
+      cleanupResults.forEach((result, index) => {
+        if (result.status === "rejected") {
+          console.warn("Could not remove replaced Cloudinary image:", removedImages[index], result.reason);
+        }
+      });
+    }
+
+    try {
+      await cache.del("public:properties");
+      await cache.del("public:properties:count");
+    } catch (cacheError) {
+      console.warn("Could not clear property cache after update:", cacheError);
+    }
+
+    return res.json({ message: "Property updated successfully", id: Number(id) });
   } catch (error) {
-    console.error('Update property error:', error);
-    res.status(500).json({ message: 'Server error' });
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("Property update rollback failed:", rollbackError);
+      }
+      connection.release();
+    }
+    await Promise.allSettled(uploadedUrls.map(removeCloudinaryImage));
+
+    if (error.message?.includes(" is invalid") || error.message?.includes("must be a non-empty string")) {
+      return res.status(400).json({ message: error.message });
+    }
+    console.error("Update property error:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 

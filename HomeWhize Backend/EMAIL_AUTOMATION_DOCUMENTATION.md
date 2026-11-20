@@ -6,7 +6,7 @@ This document describes the complete email automation system implemented for Hom
 
 ---
 
-## 📧 Email Templates & Scenarios
+##  Email Templates & Scenarios
 
 ### 1. **Manual Signup Acknowledgment**
 - **Trigger:** When a user signs up manually via the signup form
@@ -166,7 +166,7 @@ Sent to: New owners/users after account creation
 
 ---
 
-## 🔧 Implementation Details
+##  Implementation Details
 
 ### Email Service (`utils/emailService.js`)
 
@@ -223,7 +223,7 @@ EMAIL_PASS=your-app-specific-password
 
 ---
 
-## 📚 API Endpoints
+##  API Endpoints
 
 ### 1. Create Owner Account
 ```
@@ -331,7 +331,7 @@ Email Sent:
 
 ---
 
-## 🎨 Email Design & Branding
+##  Email Design & Branding
 
 All emails follow HomeWhize branding guidelines:
 
@@ -356,7 +356,7 @@ All emails follow HomeWhize branding guidelines:
 
 ---
 
-## 🛠️ Troubleshooting
+##  Troubleshooting
 
 ### Emails Not Sending
 
@@ -391,7 +391,7 @@ All emails follow HomeWhize branding guidelines:
 
 ---
 
-## 📊 Email Tracking & Logging
+##  Email Tracking & Logging
 
 All email send attempts are logged:
 
@@ -410,7 +410,7 @@ Emails fail gracefully - if email sending fails, the primary operation (signup, 
 
 ---
 
-## 🔒 Security Considerations
+##  Security Considerations
 
 1. **Temporary Passwords:**
    - Always `Homewhize@2026` for new accounts
@@ -432,7 +432,7 @@ Emails fail gracefully - if email sending fails, the primary operation (signup, 
 
 ---
 
-## 📱 Mobile Optimization
+##  Mobile Optimization
 
 All email templates are mobile-responsive:
 - Responsive grid layouts
@@ -442,7 +442,7 @@ All email templates are mobile-responsive:
 
 ---
 
-## 🔄 Future Enhancements
+##  Future Enhancements
 
 Potential additions to the email system:
 
@@ -476,7 +476,7 @@ Potential additions to the email system:
 
 ---
 
-## 📞 Support
+##  Support
 
 For issues or questions about the email system, check:
 1. Email logs in console
@@ -486,7 +486,7 @@ For issues or questions about the email system, check:
 
 ---
 
-## 📝 Version History
+##  Version History
 
 - **v1.0** (Feb 16, 2026) - Initial implementation
   - Signup acknowledgment emails
@@ -497,7 +497,7 @@ For issues or questions about the email system, check:
 
 ---
 
-## 🎯 Quick Reference
+##  Quick Reference
 
 | Scenario | Trigger | Email Type | Recipient |
 |----------|---------|-----------|-----------|
@@ -510,4 +510,4 @@ For issues or questions about the email system, check:
 
 ---
 
-**Happy emailing! 🚀**
+**Happy emailing! **

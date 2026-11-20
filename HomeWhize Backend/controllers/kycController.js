@@ -1,7 +1,5 @@
 import db from "../config/db.js";
 import cloudinary from "../config/cloudinary.js";
-import crypto from "crypto";
-import http from "http";
 import https from "https";
 import { createSubaccountForUser } from "./paystackSubaccountController.js";
 import { getSubaccountByUserId, saveSubaccount } from "../models/subaccountModel.js";
@@ -421,218 +419,120 @@ export const debugGetKYC = async (req, res) => {
   }
 };
 
-/* DOWNLOAD DOCUMENT - Fetch from Cloudinary and serve with proper headers */
+const getKycDocument = async (req, res, attachment) => {
+  const { id, docType } = req.params;
+  if (!/^\d+$/.test(String(id))) {
+    return res.status(400).json({ message: "Invalid KYC request ID" });
+  }
+  if (!["id", "ownership"].includes(docType)) {
+    return res.status(400).json({ message: "Invalid document type" });
+  }
+
+  const [rows] = await db.execute(
+    "SELECT user_id, id_document_url, ownership_document_url FROM kyc_requests WHERE id = ?",
+    [id]
+  );
+  if (!rows.length) return res.status(404).json({ message: "KYC request not found" });
+
+  const record = rows[0];
+  if (!["superadmin", "master"].includes(req.user.role) && Number(record.user_id) !== Number(req.user.id)) {
+    return res.status(403).json({ message: "Not authorized to access this document" });
+  }
+
+  const documentUrl = docType === "id" ? record.id_document_url : record.ownership_document_url;
+  if (!documentUrl) return res.status(404).json({ message: "Document not found" });
+
+  let url;
+  try {
+    url = new URL(documentUrl);
+  } catch {
+    return res.status(502).json({ message: "Stored document URL is invalid" });
+  }
+  if (url.protocol !== "https:" || url.hostname !== "res.cloudinary.com") {
+    return res.status(502).json({ message: "Stored document URL is not a trusted Cloudinary URL" });
+  }
+
+  const filename = decodeURIComponent(url.pathname.split("/").pop() || `${docType}-document`)
+    .replace(/[\r\n"]/g, "_");
+  const disposition = attachment ? "attachment" : "inline";
+
+  return new Promise((resolve) => {
+    const request = https.get(url, (remoteResponse) => {
+      if (remoteResponse.statusCode !== 200) {
+        remoteResponse.resume();
+        if (!res.headersSent) {
+          res.status(502).json({ message: "Cloudinary could not return the stored document" });
+        }
+        resolve();
+        return;
+      }
+
+      res.status(200);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Content-Type", remoteResponse.headers["content-type"] || "application/octet-stream");
+      res.setHeader("Content-Disposition", `${disposition}; filename="${filename}"`);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      remoteResponse.on("error", (error) => {
+        console.error("Cloudinary document stream failed:", error);
+        if (!res.headersSent) res.status(502).json({ message: "Document stream failed" });
+        else res.destroy(error);
+      });
+      remoteResponse.pipe(res);
+      remoteResponse.on("end", resolve);
+    });
+
+    request.setTimeout(60000, () => {
+      request.destroy(new Error("Timed out while fetching KYC document from Cloudinary"));
+    });
+    request.on("error", (error) => {
+      console.error("Cloudinary document request failed:", error);
+      if (!res.headersSent) res.status(502).json({ message: "Could not retrieve document from Cloudinary" });
+      else res.destroy(error);
+      resolve();
+    });
+  });
+};
 
 export const downloadDocument = async (req, res) => {
   try {
-    const { id, docType } = req.params;
-
-    if (!["id", "ownership"].includes(docType)) {
-      return res.status(400).json({ message: "Invalid document type" });
-    }
-
-    const [rows] = await db.execute(
-      "SELECT id_document_url, ownership_document_url FROM kyc_requests WHERE id=?",
-      [id]
-    );
-
-    if (!rows.length) {
-      return res.status(404).json({ message: "KYC request not found" });
-    }
-
-    const docUrl =
-      docType === "id"
-        ? rows[0].id_document_url
-        : rows[0].ownership_document_url;
-
-    if (!docUrl) {
-      return res.status(404).json({ message: "Document not found" });
-    }
-
-    // Derive the public_id from the Cloudinary URL
-    const urlObj = new URL(docUrl);
-    const pathAfterUpload = urlObj.pathname.split("/upload/")[1] || "";
-    const withoutVersion = pathAfterUpload.replace(/^v\d+\//, "");
-    const publicId = withoutVersion.replace(/\.[^/.]+$/, "");
-
-    // Build a signed/private download URL using Cloudinary SDK when possible
-    let signedUrl;
-    try {
-      if (cloudinary.utils && typeof cloudinary.utils.private_download_url === "function") {
-        signedUrl = cloudinary.utils.private_download_url(publicId, { resource_type: "auto", attachment: true });
-      } else {
-        // Fallback: sign manually
-        const timestamp = Math.floor(Date.now() / 1000);
-        const apiSecret = (process.env.CLOUDINARY_API_SECRET || cloudinary.config().api_secret || "").toString().trim();
-        const apiKey = (process.env.CLOUDINARY_API_KEY || cloudinary.config().api_key || "").toString().trim();
-        const cloudName = (process.env.CLOUDINARY_NAME || cloudinary.config().cloud_name || "").toString().trim();
-        
-        // For private download URLs, include all parameters in signature
-        const params = {
-          public_id: publicId,
-          timestamp: timestamp.toString(),
-          api_key: apiKey
-        };
-        
-        // Sort parameters alphabetically and create string to sign
-        const sortedParams = Object.keys(params).sort().map(key => `${key}=${params[key]}`).join('&');
-        const signature = crypto.createHash("sha1").update(sortedParams + apiSecret).digest("hex");
-        
-        signedUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/download?${sortedParams}&signature=${signature}`;
-      }
-    } catch (e) {
-      console.error("Failed to generate signed Cloudinary URL:", e);
-    }
-
-    if (!signedUrl) {
-      return res.status(500).json({ message: "Failed to generate signed download URL" });
-    }
-
-    // Fetch the signed URL server-side and pipe to client to avoid CORS and XHR credential issues
-    const signedUrlObj = new URL(signedUrl);
-    const client = signedUrlObj.protocol === "https:" ? https : http;
-
-    const signedReq = client.get(signedUrlObj, (signedRes) => {
-      if (signedRes.statusCode && signedRes.statusCode >= 400) {
-        console.error("Signed URL fetch failed with status", signedRes.statusCode);
-        return res.status(502).json({ message: "Failed to fetch signed file from Cloudinary" });
-      }
-
-      const contentType = signedRes.headers["content-type"] || "application/octet-stream";
-      const remoteDisposition = signedRes.headers["content-disposition"];
-      res.setHeader("Content-Type", contentType);
-      if (remoteDisposition) res.setHeader("Content-Disposition", remoteDisposition);
-      else res.setHeader("Content-Disposition", `attachment; filename="${docType}-document"`);
-
-      signedRes.pipe(res);
-    });
-
-    signedReq.on("error", (err) => {
-      console.error("Error fetching signed URL:", err);
-      if (!res.headersSent) res.status(500).json({ message: "Download failed" });
-    });
-
-    signedReq.setTimeout(60 * 1000, () => {
-      signedReq.destroy(new Error("Timeout fetching signed remote file"));
-    });
+    return await getKycDocument(req, res, true);
   } catch (error) {
-    console.error("Download error:", error);
-    return res.status(500).json({ message: "Download failed" });
+    console.error("KYC document download error:", error);
+    if (!res.headersSent) return res.status(500).json({ message: "Document download failed" });
+    return res.destroy(error);
   }
 };
 
-/* GENERATE SIGNED URL (for frontend to open directly) */
+export const viewDocument = async (req, res) => {
+  try {
+    return await getKycDocument(req, res, false);
+  } catch (error) {
+    console.error("KYC document preview error:", error);
+    if (!res.headersSent) return res.status(500).json({ message: "Document preview failed" });
+    return res.destroy(error);
+  }
+};
+
 export const getSignedDocumentUrl = async (req, res) => {
   try {
     const { id, docType } = req.params;
+    if (!/^\d+$/.test(String(id))) return res.status(400).json({ message: "Invalid KYC request ID" });
     if (!["id", "ownership"].includes(docType)) {
       return res.status(400).json({ message: "Invalid document type" });
     }
 
     const [rows] = await db.execute(
-      "SELECT id_document_url, ownership_document_url FROM kyc_requests WHERE id=?",
-      [id]
-    );
-
-    if (!rows.length) return res.status(404).json({ message: "KYC request not found" });
-
-    const docUrl = docType === "id" ? rows[0].id_document_url : rows[0].ownership_document_url;
-    if (!docUrl) return res.status(404).json({ message: "Document not found" });
-
-    const urlObj = new URL(docUrl);
-    const pathAfterUpload = urlObj.pathname.split("/upload/")[1] || "";
-    const withoutVersion = pathAfterUpload.replace(/^v\d+\//, "");
-    const publicId = withoutVersion.replace(/\.[^/.]+$/, "");
-
-    let signedUrl;
-    try {
-      if (cloudinary.utils && typeof cloudinary.utils.private_download_url === "function") {
-        signedUrl = cloudinary.utils.private_download_url(publicId, { resource_type: "auto" });
-      } else {
-        // Fallback: generate signed URL manually for consistency
-        const timestamp = Math.floor(Date.now() / 1000);
-        const apiSecret = (process.env.CLOUDINARY_API_SECRET || cloudinary.config().api_secret || "").toString().trim();
-        const apiKey = (process.env.CLOUDINARY_API_KEY || cloudinary.config().api_key || "").toString().trim();
-        const cloudName = (process.env.CLOUDINARY_NAME || cloudinary.config().cloud_name || "").toString().trim();
-        
-        // For signed URLs, include all parameters in signature
-        const params = {
-          public_id: publicId,
-          timestamp: timestamp.toString(),
-          api_key: apiKey
-        };
-        
-        // Sort parameters alphabetically and create string to sign
-        const sortedParams = Object.keys(params).sort().map(key => `${key}=${params[key]}`).join('&');
-        const signature = crypto.createHash("sha1").update(sortedParams + apiSecret).digest("hex");
-        
-        signedUrl = `https://res.cloudinary.com/${cloudName}/image/upload/${sortedParams}&signature=${signature}`;
-      }
-    } catch (e) {
-      console.error("Signed URL generation failed:", e);
-      return res.status(500).json({ message: "Failed to generate signed URL" });
-    }
-
-    if (!signedUrl) return res.status(500).json({ message: "Failed to generate signed URL" });
-
-    res.json({ url: signedUrl });
-  } catch (err) {
-    console.error("Get signed URL error:", err);
-    res.status(500).json({ message: "Failed to get signed URL" });
-  }
-};
-
-// Debug endpoint: return public_id, stringToSign, computed signature and URL
-export const getSignedDocumentDebug = async (req, res) => {
-  try {
-    const { id, docType } = req.params;
-    if (!["id", "ownership"].includes(docType)) {
-      return res.status(400).json({ message: "Invalid document type" });
-    }
-
-    const [rows] = await db.execute(
-      "SELECT id_document_url, ownership_document_url FROM kyc_requests WHERE id=?",
+      "SELECT id_document_url, ownership_document_url FROM kyc_requests WHERE id = ?",
       [id]
     );
     if (!rows.length) return res.status(404).json({ message: "KYC request not found" });
 
-    const docUrl = docType === "id" ? rows[0].id_document_url : rows[0].ownership_document_url;
-    if (!docUrl) return res.status(404).json({ message: "Document not found" });
-
-    const urlObj = new URL(docUrl);
-    const pathAfterUpload = urlObj.pathname.split("/upload/")[1] || "";
-    const withoutVersion = pathAfterUpload.replace(/^v\d+\//, "");
-    const publicId = withoutVersion.replace(/\.[^/.]+$/, "");
-
-    const timestamp = Math.floor(Date.now() / 1000);
-    const stringToSign = `public_id=${publicId}&timestamp=${timestamp}`;
-    const apiSecret = (process.env.CLOUDINARY_API_SECRET || cloudinary.config().api_secret || "").toString().trim();
-    const apiKey = (process.env.CLOUDINARY_API_KEY || cloudinary.config().api_key || "").toString().trim();
-    const cloudName = (process.env.CLOUDINARY_NAME || cloudinary.config().cloud_name || "").toString().trim();
-
-    if (!apiSecret || !apiKey || !cloudName) {
-      return res.status(500).json({ message: "Cloudinary credentials missing on server" });
-    }
-
-    // Prefer Cloudinary SDK signing helper to ensure compatibility
-    let signature;
-    try {
-      if (cloudinary.utils && typeof cloudinary.utils.api_sign_request === "function") {
-        signature = cloudinary.utils.api_sign_request({ public_id: publicId, timestamp }, apiSecret);
-      } else {
-        signature = crypto.createHash("sha1").update(stringToSign + apiSecret).digest("hex");
-      }
-    } catch (e) {
-      console.error("Error computing signature:", e);
-      signature = crypto.createHash("sha1").update(stringToSign + apiSecret).digest("hex");
-    }
-
-    const signedUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/download?timestamp=${timestamp}&public_id=${encodeURIComponent(publicId)}&signature=${signature}&api_key=${apiKey}`;
-
-    return res.json({ publicId, stringToSign, signature, signedUrl });
-  } catch (err) {
-    console.error("Signed debug error:", err);
-    res.status(500).json({ message: "Failed to generate signed debug info", error: err.message });
+    const url = docType === "id" ? rows[0].id_document_url : rows[0].ownership_document_url;
+    if (!url) return res.status(404).json({ message: "Document not found" });
+    return res.json({ url });
+  } catch (error) {
+    console.error("Get KYC document URL error:", error);
+    return res.status(500).json({ message: "Failed to get document URL" });
   }
 };
 
@@ -670,4 +570,3 @@ export const getBanksList = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-

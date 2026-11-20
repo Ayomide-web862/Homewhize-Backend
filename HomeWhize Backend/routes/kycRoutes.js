@@ -8,9 +8,9 @@ import {
   getAllKYC,
   updateKYCStatus,
   downloadDocument,
+  viewDocument,
   debugGetKYC,
   getSignedDocumentUrl,
-  getSignedDocumentDebug,
   getBanksList
 } from "../controllers/kycController.js";
 
@@ -39,9 +39,9 @@ router.get("/debug/:id", protect, roleMiddleware("superadmin"), debugGetKYC);
 
 // Download document proxy (anyone authenticated can download their own or assigned documents)
 router.get("/download/:id/:docType", protect, downloadDocument);
+router.get("/document/:id/:docType", protect, viewDocument);
 
-// Get signed URL for direct download/open in browser (avoids CORS/XHR issues)
-router.get("/signed-url/:id/:docType", protect, roleMiddleware("superadmin"), getSignedDocumentUrl);
-router.get("/signed-url-debug/:id/:docType", protect, roleMiddleware("superadmin"), getSignedDocumentDebug);
+// Legacy endpoint retained for clients that need the original Cloudinary URL.
+router.get("/signed-url/:id/:docType", protect, roleMiddleware("superadmin", "master"), getSignedDocumentUrl);
 
 export default router;
